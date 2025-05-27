@@ -169,3 +169,4 @@ scripts/
 eval/
 *.DS_Store
 benchmark/datasets
+!help_content.json

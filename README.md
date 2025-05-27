@@ -27,15 +27,39 @@ CVPR 2025， **Highlight**
 
 </div>
 
-## 🔆 Notice
 
-**DepthCrafter is still under active development!**
+## GUI for Enhanced Workflow (Community Contribution)
 
-We recommend that everyone use English to communicate on issues, as this helps developers from around the world discuss, share experiences, and answer questions together.
+A graphical user interface (GUI) has been added to DepthCrafter to simplify batch processing, manage videos requiring segmentation (e.g., for low VRAM environments or very long videos), and streamline the output process.
 
-For business licensing and other related inquiries, don't hesitate to contact `wbhu@tencent.com`.
+**Key Features Added:**
 
+*   **Intuitive Graphical Interface:**
+    *   Easily select input video folders and output directories.
+    *   Adjust core DepthCrafter parameters (guidance scale, inference steps, resolution, seed, etc.) through a user-friendly panel.
+*   **Video Segmentation for Long/Large Videos:**
+    *   **Automatic Segmentation:** Process videos in manageable segments with configurable window sizes and overlap, ideal for systems with limited VRAM or for extremely long input videos.
+    *   **Segment Management:** Handles the creation and processing of individual video segments.
+    *   **Resume Capability:** If processing is interrupted, the GUI can identify and re-process only missing or failed segments, saving significant time.
+*   **Segment Merging & Post-Processing:**
+    *   **Automated Merging:** After segments are processed, the GUI can automatically merge them back into a full-length depth map video.
+    *   **Alignment Options:** Choose between "Compute Shift & Scale" or "Linear Blend" methods for aligning segment values during the merge.
+    *   **Post-Processing for MP4:** Apply optional gamma adjustment and dithering to merged MP4 outputs to enhance visual quality.
+    *   **Flexible Output Formats for Merged Video:** Save the final merged depth video as MP4, or as a sequence of PNG or EXR frames. Single frame EXR output is also supported for the first frame of a merged sequence.
+    *   **Re-merge final video without re processing. (If NPZ files is saved)
+*   **Job Management & Configuration:**
+    *   **Batch Processing:** Process all videos within a selected input folder.
+    *   **Settings Persistence:** Save and load GUI settings (including all processing parameters) to/from JSON configuration files for repeatable workflows.
+*   **Intermediate Output Control:**
+    *   Optionally keep intermediate NPZ segment files.
+    *   Generate visual representations (MP4, PNG/EXR sequence) of individual depth segments for review *after* initial NPZ processing.
+*   **Sidecar Metadata:**
+    *   Generates detailed JSON metadata files for both individual segments and final processed/merged videos, capturing all settings and processing information.
 
+This GUI aims to make DepthCrafter more accessible and efficient for users dealing with multiple videos or those needing to break down large processing tasks.
+
+[GUI based on enoky/DepthCrafter](https://github.com/enoky/DepthCrafter)
+[Main code contributer Gemini 2.5](https://aistudio.google.com/)
 
 ## 🔆 Introduction
 🤗 If you find DepthCrafter useful, **please help ⭐ this repo**, which is important to Open-Source projects. Thanks!
