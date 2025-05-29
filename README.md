@@ -46,7 +46,7 @@ A graphical user interface (GUI) has been added to DepthCrafter to simplify batc
     *   **Alignment Options:** Choose between "Compute Shift & Scale" or "Linear Blend" methods for aligning segment values during the merge.
     *   **Post-Processing for MP4:** Apply optional gamma adjustment and dithering to merged MP4 outputs to enhance visual quality.
     *   **Flexible Output Formats for Merged Video:** Save the final merged depth video as MP4, or as a sequence of PNG or EXR frames. Single frame EXR output is also supported for the first frame of a merged sequence.
-    *   **Re-merging** Re-merge final video without re processing. (If NPZ files are saved)
+    *   **Re-merging:** Re-merge final video without re processing. (If NPZ files are saved)
 *   **Job Management & Configuration:**
     *   **Batch Processing:** Process all videos within a selected input folder.
     *   **Settings Persistence:** Save and load GUI settings (including all processing parameters) to/from JSON configuration files for repeatable workflows.
