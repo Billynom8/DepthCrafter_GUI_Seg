@@ -1016,6 +1016,15 @@ MESSAGES = {
         "level": WARNING,
         "template": "Logic Save Video: FPS value is zero or negative at save point, falling back. FPS: {fps_val}"
     },
+    "GUI_ORIGINAL_VIDEO_MOVE_CANNOT_DETERMINE_ROOT": {
+        "level": ERROR,
+        "template": "Move Original: Cannot determine a valid root directory for 'finished' folder based on input path '{path}'."
+    },
+    # Update GUI_ORIGINAL_VIDEO_MOVE_SUCCESS if you changed the keys
+    "GUI_ORIGINAL_VIDEO_MOVE_SUCCESS": {
+        "level": DETAIL,
+        "template": "Successfully moved original source '{filename}' to '{destination_folder}' folder." # Example update
+    },
 
     # Resume logic messages
     "GUI_RESUME_REPROCESS_FAILED_MASTER_START": { "template": "Attempting to re-process failed segments for {basename} based on existing master metadata.", "level": INFO },

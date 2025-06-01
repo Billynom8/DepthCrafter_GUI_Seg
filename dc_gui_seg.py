@@ -690,26 +690,59 @@ class DepthCrafterGUI:
         else:
             global_log_message("GUI_ORIGINAL_VIDEO_MOVE_SKIPPED_SINGLE_MODE", basename=original_basename) # New ID
 
-    def _move_original_video_to_finished(self, current_video_path, original_basename):
-        global_log_message("GUI_ORIGINAL_VIDEO_MOVE_ATTEMPT", basename=original_basename) # New ID
+    def _move_original_video_to_finished(self, current_video_path: str, original_basename: str):
+        # current_video_path is the path to the actual file or folder (e.g., image sequence) that was processed.
+        global_log_message("GUI_ORIGINAL_VIDEO_MOVE_ATTEMPT", basename=original_basename)
         try:
-            input_root = self.input_dir.get()
-            finished_dir = os.path.join(input_root, "finished")
+            # Get the path from the GUI input field.
+            # This could be a directory (batch mode) or a full file path (single file mode).
+            path_from_gui_input_field = self.input_dir_or_file_var.get() # Use the correct attribute
+
+            actual_input_root_for_finished_folder: str
+            if os.path.isdir(path_from_gui_input_field):
+                # If the GUI input field was set to a directory (e.g., batch processing folder,
+                # or user selected an image sequence folder directly as the input source).
+                actual_input_root_for_finished_folder = path_from_gui_input_field
+            elif os.path.isfile(path_from_gui_input_field):
+                # If the GUI input field was set to a single file.
+                # The "finished" folder should be in the same directory as this file.
+                actual_input_root_for_finished_folder = os.path.dirname(path_from_gui_input_field)
+            else:
+                # This case should ideally be prevented by earlier checks in start_thread
+                # or _determine_input_mode_from_path.
+                # As a fallback, use the directory of the item being processed.
+                log_message("GUI_ORIGINAL_VIDEO_MOVE_INVALID_INPUT_ROOT_WARN", gui_input_path=path_from_gui_input_field)
+                actual_input_root_for_finished_folder = os.path.dirname(current_video_path)
+                if not os.path.isdir(actual_input_root_for_finished_folder): # If current_video_path was also odd
+                    log_message("GUI_ORIGINAL_VIDEO_MOVE_CANNOT_DETERMINE_ROOT", path=current_video_path)
+                    # Cannot proceed if we can't determine a valid root directory.
+                    # Log an error and return, or raise an exception.
+                    global_log_message("GUI_ORIGINAL_VIDEO_MOVE_ERROR", basename=original_basename, error="Cannot determine valid root for 'finished' folder.", traceback_info=None)
+                    return
+
+            finished_dir = os.path.join(actual_input_root_for_finished_folder, "finished")
             os.makedirs(finished_dir, exist_ok=True)
+            
+            # dest_filename is the name of the item being moved (file or folder name)
             dest_filename = os.path.basename(current_video_path)
             dest_path = os.path.join(finished_dir, dest_filename)
+
             if os.path.exists(current_video_path):
                 if os.path.exists(dest_path):
-                    base, ext = os.path.splitext(dest_filename)
-                    new_dest_filename = f"{base}{time.strftime('_%Y%m%d%H%M%S')}{ext}"
-                    dest_path = os.path.join(finished_dir, new_dest_filename)
-                    global_log_message("GUI_ORIGINAL_VIDEO_MOVE_RENAMED", old_name=dest_filename, new_name=new_dest_filename) # New ID
-                shutil.move(current_video_path, dest_path)
-                global_log_message("GUI_ORIGINAL_VIDEO_MOVE_SUCCESS", filename=dest_filename) # New ID
+                    base, ext = os.path.splitext(dest_filename) # ext is empty if dest_filename is a dir
+                    # This renaming logic applies to both files and folders if the target name exists
+                    new_dest_name = f"{base}{time.strftime('_%Y%m%d%H%M%S')}{ext}"
+                    dest_path = os.path.join(finished_dir, new_dest_name)
+                    global_log_message("GUI_ORIGINAL_VIDEO_MOVE_RENAMED", old_name=dest_filename, new_name=new_dest_name)
+                
+                shutil.move(current_video_path, dest_path) # shutil.move handles files and directories
+                global_log_message("GUI_ORIGINAL_VIDEO_MOVE_SUCCESS", filename=dest_filename, destination_folder=os.path.basename(finished_dir)) # Log only finished folder name
             else:
-                global_log_message("GUI_ORIGINAL_VIDEO_MOVE_SOURCE_NOT_FOUND", path=current_video_path) # New ID
+                global_log_message("GUI_ORIGINAL_VIDEO_MOVE_SOURCE_NOT_FOUND", path=current_video_path)
+        except AttributeError as ae: # Catch the specific error if self.input_dir_or_file_var is missing
+            global_log_message("GUI_ORIGINAL_VIDEO_MOVE_ERROR", basename=original_basename, error=f"Missing attribute: {ae}", traceback_info=sys.exc_info())
         except Exception as e:
-            global_log_message("GUI_ORIGINAL_VIDEO_MOVE_ERROR", basename=original_basename, error=str(e), traceback_info=sys.exc_info()) # New ID
+            global_log_message("GUI_ORIGINAL_VIDEO_MOVE_ERROR", basename=original_basename, error=str(e), traceback_info=sys.exc_info())
 
     def _save_master_metadata_and_cleanup_segment_json(self, master_meta_to_save, original_basename, main_output_dir, was_segments, segment_subfolder_path):
         master_meta_filepath, meta_saved = None, False
