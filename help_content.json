@@ -61,7 +61,7 @@
   },
   "segment_visual_format": {
     "title": "Help: Segment Visual Format",
-    "text": "Only active if 'Process as Segments' is checked and 'Keep intermediate NPZ files' is also checked (or visuals are generated manually via button).\nDetermines the format for saving visual representations of each individual processed segment's depth map. These are saved alongside the NPZ files in the segment subfolder.\n- 'png_sequence': Saves each frame as a PNG image in a sub-subfolder.\n- 'mp4': Saves a playable MP4 video of the segment's depth map.\n- 'exr_sequence': (If OpenEXR available) Saves each frame as an EXR image (often 32-bit float) in a sub-subfolder. Good for high dynamic range.\n- 'exr': (If OpenEXR available) Saves only the first frame of the segment as a single EXR file.\n- 'none': No visual representation is saved for segments, only the NPZ data files.\nThese visuals are for previewing or debugging individual segments."
+    "text": "Only active if 'Process as Segments' is checked and 'Keep intermediate NPZ files' is also checked (or visuals are generated manually via button).\nDetermines the format for saving visual representations of each individual processed segment's depth map. These are saved alongside the NPZ files in the segment subfolder.\n\n- 'png_sequence': Saves each frame as a PNG image in a sub-subfolder.\n\n- 'main10_mp4': Saves a playable HDR10(10 bit) MP4 video of the segment's depth map.\n\n- 'mp4': Saves a playable MP4 video of the segment's depth map.\n\n- 'exr_sequence': (If OpenEXR available) Saves each frame as an EXR image (often 32-bit float) in a sub-subfolder. Good for high dynamic range.\n\n- 'exr': (If OpenEXR available) Saves only the first frame of the segment as a single EXR file.\n\n- 'none': No visual representation is saved for segments, only the NPZ data files.\n\nThese visuals are for previewing or debugging individual segments."
   },
   "merge_dither": {
     "title": "Help: Dither (MP4))",
@@ -75,13 +75,17 @@
     "title": "Help: Use Percentile Normalization for Merge",
     "text": "Only active if 'Process as Segments' is checked.\n\nWhen merging segments, this option normalizes the depth values based on percentiles across all segments rather than simple min/max. This can help to reduce the impact of extreme outliers (e.g., a few very bright or very dark pixels) on the overall brightness and contrast of the final merged output, leading to a more balanced result.\nIf unchecked, a simpler global min/max normalization across all segments is typically used.\n\n'Low' Specifies the lower percentile of depth values that will be mapped to black (or the minimum output value).\nFor example, a value of 0.1 means that the darkest 0.1% of pixels will be clipped or mapped to the minimum value. This helps ignore extreme dark outliers.\nTypical value: 0.1 to 1.0.\n\n'High' Specifies the upper percentile of depth values that will be mapped to white (or the maximum output value).\nFor example, a value of 99.9 means that the brightest 0.1% of pixels (above the 99.9th percentile) will be clipped or mapped to the maximum value. This helps ignore extreme bright outliers.\nTypical value: 99.0 to 99.9."
   },
-  "merge_output_format": {
-    "title": "Help: Merged Output Format",
-    "text": "Only active if 'Process as Segments' is checked.\nDetermines the file format of the final output after all processed segments are merged together.\n- 'mp4': Creates a standard MP4 video file (typically 8-bit).\n- 'png_sequence': Creates a sequence of PNG images, one for each frame, in a new subfolder.\n- 'exr_sequence': (If OpenEXR available) Creates a sequence of EXR images (often 32-bit float) in a new subfolder. Best for preserving full depth precision.\n- 'exr': (If OpenEXR available) Creates a single multi-channel EXR file containing all frames (if supported by library) or potentially just the first frame if merging to a single EXR is complex/not supported by the merge script for all frames. *Note: The merge script typically outputs EXR sequences, not single multi-frame EXRs.*"
-  },
   "merge_alignment_method": {
     "title": "Help: Merge Alignment Method",
     "text": "Only active if 'Process as Segments' is checked.\nDetermines the method used to align and blend overlapping regions between consecutive depth segments during merging.\n- 'Shift & Scale': Attempts to globally adjust the brightness (shift) and contrast (scale) of one segment to match the overlapping part of the previous segment. Good for consistent lighting.\n- 'Linear Blend': Performs a simple linear cross-fade (alpha blend) in the overlapping region. Can be smoother but might lose some contrast if segments have very different overall brightness levels.\nExperiment to see which works best for your content."
+  },
+  "merge_output_format": {
+    "title": "Help: Merged Output Format",
+    "text": "Only active if 'Process as Segments' is checked.\nDetermines the file format of the final output after all processed segments are merged together.\n\n- 'mp4': Creates a standard MP4 video file (typically 8-bit).\n\n- 'main10_mp4': Creates HEVC HDR10 bit x265 MP4 video file.\n\n- 'png_sequence': Creates a sequence of PNG images, one for each frame, in a new subfolder.\n\n- 'exr_sequence': (If OpenEXR available) Creates a sequence of EXR images (often 32-bit float) in a new subfolder. Best for preserving full depth precision.\n\n- 'exr': (If OpenEXR available) Creates a single multi-channel EXR file containing all frames (if supported by library) or potentially just the first frame if merging to a single EXR is complex/not supported by the merge script for all frames. *Note: The merge script typically outputs EXR sequences, not single multi-frame EXRs.*"
+  },
+  "merge_output_suffix": {
+    "title": "Merge Output Suffix",
+    "text": "This suffix will be appended to the original video's basename to form the merged output filename (before the extension).\n\nDefault is '_depth'.\nExample: If original is 'my_video.mp4' and suffix is '_custom_depth', merged output might be 'my_video_custom_depth.mp4'."
   },
   "merge_log_verbosity": {
     "title": "Help: Merge Log Verbosity (GUI)",

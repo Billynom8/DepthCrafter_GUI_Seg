@@ -19,14 +19,23 @@ _**[Wenbo Hu<sup>1* &dagger;</sup>](https://wbhu.github.io),
 [Long Quan<sup>2</sup>](https://home.cse.ust.hk/~quan), 
 [Ying Shan<sup>3, 1</sup>](https://scholar.google.com/citations?user=4oXBp9UAAAAJ&hl=en)**_
 <br><br>
-<sup>1</sup>Tencent AI Lab
+<sup>1</sup>Tencent AI Labv
 <sup>2</sup>The Hong Kong University of Science and Technology
 <sup>3</sup>ARC Lab, Tencent PCG
 
 CVPR 2025， **Highlight**
 
+
 </div>
 
+
+## GUI Update
+*   `[25-06-01]` 
+
+    *   Image sequence loading.
+    *   Single image loading to generate 5 frame depth video or image.
+    *   Single video loading and process (not batch).
+    *   Save 10bit x265 MP4
 
 ## GUI for Enhanced Workflow (Community Contribution)
 

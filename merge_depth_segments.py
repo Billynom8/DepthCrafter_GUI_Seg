@@ -374,9 +374,9 @@ def _determine_output_path(
     return output_path_final
 
 def _save_output_to_disk(video_data: np.ndarray, save_path: str, out_format: str, fps_val: float):
-    log_message("MERGE_SAVING_TO_DISK_START", path=save_path, format=out_format, fps=fps_val) # New ID
+    log_message("MERGE_SAVING_TO_DISK_START", path=save_path, format=out_format, fps=fps_val)
     if video_data is None or video_data.size == 0:
-        log_message("MERGE_SAVE_EMPTY_DATA_ERROR") # New ID
+        log_message("MERGE_SAVE_EMPTY_DATA_ERROR")
         raise ValueError("Video data for saving is empty.")
 
     try:
@@ -384,9 +384,9 @@ def _save_output_to_disk(video_data: np.ndarray, save_path: str, out_format: str
             for i, frame_f in enumerate(video_data):
                 frame_u16 = (np.clip(frame_f, 0, 1) * 65535.0).astype(np.uint16)
                 imageio.imwrite(os.path.join(save_path, f"frame_{i:05d}.png"), frame_u16)
-            log_message("MERGE_SAVE_PNG_SEQ_SUCCESS", count=len(video_data), path=save_path) # New ID
+            log_message("MERGE_SAVE_PNG_SEQ_SUCCESS", count=len(video_data), path=save_path)
         elif out_format == "exr_sequence":
-            if not _HAS_OPENEXR: 
+            if not _HAS_OPENEXR:
                 log_message("OPENEXR_UNAVAILABLE", context="_save_output_to_disk (exr_sequence)")
                 raise ImportError("OpenEXR/Imath missing for EXR sequence.")
             saved_count, failed_count = 0,0
@@ -395,28 +395,34 @@ def _save_output_to_disk(video_data: np.ndarray, save_path: str, out_format: str
                     save_single_frame_exr(frame_f.astype(np.float32), os.path.join(save_path, f"frame_{i:05d}.exr"))
                     saved_count +=1
                 except Exception as e_exr_frame:
-                    log_message("MERGE_SAVE_EXR_FRAME_ERROR", frame_num=i, error=str(e_exr_frame)) # New ID
+                    log_message("MERGE_SAVE_EXR_FRAME_ERROR", frame_num=i, error=str(e_exr_frame))
                     failed_count +=1
-            log_message("MERGE_SAVE_EXR_SEQ_SUMMARY", saved=saved_count, total=len(video_data), path=save_path) # New ID
-            if failed_count > 0: 
-                log_message("MERGE_SAVE_EXR_SEQ_FAILURES_WARN", failed_count=failed_count) # New ID
+            log_message("MERGE_SAVE_EXR_SEQ_SUMMARY", saved=saved_count, total=len(video_data), path=save_path)
+            if failed_count > 0:
+                log_message("MERGE_SAVE_EXR_SEQ_FAILURES_WARN", failed_count=failed_count)
         elif out_format == "exr":
-            if not _HAS_OPENEXR: 
+            if not _HAS_OPENEXR:
                 log_message("OPENEXR_UNAVAILABLE", context="_save_output_to_disk (single exr)")
                 raise ImportError("OpenEXR/Imath missing for single EXR.")
             if len(video_data) > 0:
                 save_single_frame_exr(video_data[0].astype(np.float32), save_path)
-                log_message("MERGE_SAVE_SINGLE_EXR_SUCCESS", path=save_path) # New ID
-            else: 
-                log_message("MERGE_SAVE_SINGLE_EXR_NO_FRAMES_WARN") # New ID
-        elif out_format == "mp4":
-            dc_utils.save_video(video_data, save_path, fps=fps_val)
-            log_message("MERGE_SAVE_MP4_SUCCESS", path=save_path) # New ID
+                log_message("MERGE_SAVE_SINGLE_EXR_SUCCESS", path=save_path)
+            else:
+                log_message("MERGE_SAVE_SINGLE_EXR_NO_FRAMES_WARN")
+        # START MODIFICATION for _save_output_to_disk
+        elif out_format == "mp4": # Standard H.264 8-bit MP4
+            dc_utils.save_video(video_data, save_path, fps=fps_val, output_format="mp4") # Pass explicit format
+            log_message("MERGE_SAVE_MP4_SUCCESS", path=save_path)
+        elif out_format == "main10_mp4": # HEVC (H.265) 10-bit MP4
+            # Ensure the save_path has .mp4 extension, _determine_output_path should handle this.
+            dc_utils.save_video(video_data, save_path, fps=fps_val, output_format="main10_mp4")
+            log_message("MERGE_SAVE_HEVC_MAIN10_MP4_SUCCESS", path=save_path) # New specific log ID
+        # END MODIFICATION
         else:
-            log_message("MERGE_SAVE_UNKNOWN_FORMAT_ERROR", format=out_format) # New ID
-            raise ValueError(f"Unknown output format for saving: {out_format}")
+            log_message("MERGE_SAVE_UNKNOWN_FORMAT_ERROR", format=out_format)
+            raise ValueError(f"Unknown output format for saving: {out_format}") # This was your error point
     except Exception as e_save_disk:
-        log_message("MERGE_SAVE_DISK_ERROR_CRITICAL", error=str(e_save_disk), traceback=sys.exc_info()) # New ID (pass exc_info for traceback if desired)
+        log_message("MERGE_SAVE_DISK_ERROR_CRITICAL", error=str(e_save_disk), traceback_info=sys.exc_info()) # Use traceback_info for new catalog
         raise
 
 def merge_depth_segments(
@@ -484,24 +490,35 @@ def merge_depth_segments(
         )
         
         video_to_save = normalized_video
-        if output_format == "mp4":
+        if "mp4" in output_format.lower(): # Covers "mp4", "main10_mp4"
             video_to_save = _apply_mp4_postprocessing_refactored(
-                normalized_video, 
-                apply_gamma_correction, 
-                gamma_value, 
-                do_dithering, 
+                normalized_video,
+                apply_gamma_correction,
+                gamma_value,
+                do_dithering,
                 dither_strength_factor
             )
+        else:
+            log_message("MERGE_POSTPROC_SKIPPED_NON_MP4", format=output_format)
         
         log_message("MERGE_FINAL_VIDEO_STATS_INFO", shape=video_to_save.shape, dtype=str(video_to_save.dtype), 
                     min_val=video_to_save.min(), max_val=video_to_save.max()) # New ID
 
         original_basename_from_meta = meta_data.get("original_video_basename", "merged_video")
+        file_extension_for_path = "mp4" # Default for our video formats
+        if output_format == "png_sequence":
+            file_extension_for_path = "png_sequence" # Special case for _determine_output_path
+        elif output_format == "exr_sequence":
+            file_extension_for_path = "exr_sequence" # Special case for _determine_output_path
+        elif output_format == "exr":
+            file_extension_for_path = "exr"
+        # For "mp4", "mp4_main10", "main10_mp4", the file_extension_for_path remains "mp4"
+
         actual_saved_output_path = _determine_output_path(
             output_path_arg,
             master_meta_path,
             original_basename_from_meta,
-            output_format,
+            file_extension_for_path, # Pass the simple, standard extension here
             output_filename_override_base
         )
         
@@ -526,7 +543,8 @@ if __name__ == "__main__":
     parser.add_argument("--percentile_norm", action="store_true", help="Use percentile clipping for normalization.")
     parser.add_argument("--norm_low_perc", type=float, default=0.1, help="Low percentile.")
     parser.add_argument("--norm_high_perc", type=float, default=99.9, help="High percentile.")
-    parser.add_argument("--output_format", type=str, default="mp4", choices=["mp4", "png_sequence", "exr_sequence", "exr"], help="Output format.")
+    output_format_choices = ["mp4", "main10_mp4", "png_sequence", "exr_sequence", "exr"]
+    parser.add_argument("--output_format", type=str, default="mp4", choices=output_format_choices, help="Output format.")
     parser.add_argument("--apply_gamma", action="store_true", help="Enable gamma correction for MP4.")
     parser.add_argument("--gamma_value", type=float, default=1.5, help="Gamma value for MP4.")
     parser.add_argument("--merge_alignment_method", type=str, default="shift_scale", choices=["shift_scale", "linear_blend"], help="Segment alignment method.")

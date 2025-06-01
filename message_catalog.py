@@ -150,6 +150,18 @@ MESSAGES = {
         "template": "Error writing video to {filepath} using mediapy: {error}",
         "level": ERROR,
     },
+    "VIDEO_SAVE_HEVC_MAIN10_MP4_SELECTED": {
+        "template": "Attempting to save HEVC Main10 (libx265) to: {filepath} with parameters: {kwargs}",
+        "level": DETAIL,
+    },
+    "VIDEO_SAVE_HEVC_MAIN10_MP4_SELECTED": {
+        "template": "Attempting to save HEVC Main10 (libx265) to: {filepath} with mediapy_kwargs: {kwargs}, ffmpeg_args: {ffmpeg_args}",
+        "level": DETAIL,
+    },
+    "VIDEO_SAVE_HEVC_MP4_EXTENSION_WARN": {
+        "template": "Saving HEVC to an .mp4 container, but the output path '{filepath}' does not end with .mp4. This might lead to issues if an explicit format isn't forced.",
+        "level": WARNING, # As per your log
+    },
     "COLORMAP_MPL_IMPORT_ERROR": {
         "template": "Matplotlib.cm not found. ColorMapper will use a basic grayscale fallback.",
         "level": WARNING,
@@ -220,7 +232,7 @@ MESSAGES = {
         "level": DEBUG,
     },
     "VISUAL_SAVE_SEGMENT_SUCCESS": {
-        "template": "Saved intermediate segment visual ({format}): {name}",
+        "template": "Saved intermediate segment visual in {format}",
         "level": INFO,
     },
     "VISUAL_SAVE_SEGMENT_ERROR": {
@@ -252,9 +264,13 @@ MESSAGES = {
         "template": "Frame data for EXR must be 2D (H, W). Got shape: {shape}",
         "level": ERROR,
     },
+    "MERGE_SAVE_HEVC_MAIN10_MP4_SUCCESS": {
+        "template": "Succesfully merged HEVC10 MP4",
+        "level": INFO,
+    },
     "MERGE_METADATA_LOAD_ATTEMPT": {
         "template": "Loading merge metadata from: {path}",
-        "level": INFO,
+        "level": DETAIL,
     },
     "MERGE_METADATA_NOT_SEGMENTED_ERROR": {
         "template": "CRITICAL: 'processed_as_segments' is not true in metadata: {path}. Aborting merge.",
@@ -460,7 +476,7 @@ MESSAGES = {
         "level": ERROR,
     },
     "MERGE_SAVE_DISK_ERROR_CRITICAL": {
-        "template": "CRITICAL ERROR during final disk save: {error}. Traceback: {traceback}", # Optionally log traceback
+        "template": "CRITICAL ERROR during final disk save: {error}", # Optionally log traceback
         "level": CRITICAL,
     },
     "MERGE_PROCESS_START": {
@@ -794,6 +810,212 @@ MESSAGES = {
         "template": "GUI log verbosity changed to: {level_name} (Numeric: {numeric_level})",
         "level": INFO,
     },
+    "IMAGE_SEQUENCE_NO_FRAMES_FOUND": {
+        "level": WARNING,
+        "template": "Image Sequence: No compatible image files found in folder '{folder_path}'. Supported extensions: {extensions}."
+    },
+    "IMAGE_READ_ERROR": {
+        "level": ERROR,
+        "template": "Image Read Error: Could not read image file '{filepath}'. Error: {error}."
+    },
+    "IMAGE_SEQUENCE_METADATA_SUCCESS": {
+        "level": DEBUG,
+        "template": "Image Sequence Metadata: Folder '{folder_path}', Frames: {count}, Effective FPS: {fps:.2f}, H: {height}, W: {width}."
+    },
+    "SINGLE_IMAGE_METADATA_SUCCESS": {
+        "level": DEBUG,
+        "template": "Single Image Metadata: File '{image_path}', Frames for 1s clip: {frames_for_clip}, Effective FPS: {fps:.2f}, H: {height}, W: {width}."
+    },
+    "IMAGE_SEQUENCE_LOAD_NO_IMAGES": {
+        "level": WARNING,
+        "template": "Image Sequence Load: No images found or readable in '{folder_path}'."
+    },
+    "IMAGE_SEQUENCE_FRAME_READ_ERROR": {
+        "level": WARNING,
+        "template": "Image Sequence Load: Error reading frame '{filepath}'. Error: {error}. Skipping frame."
+    },
+    "IMAGE_SEQUENCE_LOAD_FAILED_ALL_FRAMES": {
+        "level": ERROR,
+        "template": "Image Sequence Load: Failed to load any frames from '{folder_path}'."
+    },
+    "IMAGE_SEQUENCE_LOAD_SUCCESS": {
+        "level": INFO,
+        "template": "Image Sequence Load: Successfully loaded {num_frames} frames from '{folder_path}' (H:{height}, W:{width})."
+    },
+    "SINGLE_IMAGE_FRAMES_GENERATED": {
+        "level": INFO,
+        "template": "Single Image: Generated {num_frames} frames for 1s clip from '{image_path}' (H:{height}, W:{width})."
+    },
+    "SINGLE_IMAGE_FRAMES_GENERATION_ERROR": {
+        "level": ERROR,
+        "template": "Single Image: Error generating frames from '{image_path}'. Error: {error}."
+    },
+    "SEGMENT_DEFINE_ZERO_ADVANCE": {
+        "level": WARNING,
+        "template": "Segment Definition for '{video_name}': Raw advance per segment is {advance} (window_raw: {window_raw}). This is okay if total length ({effective_length}) is less than one window, otherwise it's an issue."
+    },
+    "FRAMES_LOAD_UNKNOWN_SOURCE_DICT_ERROR": {
+        "level": ERROR,
+        "template": "Frames Load: Unknown source type '{type}' in input dictionary."
+    },
+    "RUN_MISSING_BASENAME_FOR_DICT_ERROR": {
+        "level": ERROR,
+        "template": "Run Logic: original_video_basename_override is required for dictionary input. Dict keys: {info_dict_keys}"
+    },
+    "GUI_INPUT_MODE_SET_IMG_SEQ_FOLDER": {
+        "level": INFO,
+        "template": "GUI: Input mode set to Image Sequence Folder: {path}"
+    },
+    "GUI_INPUT_MODE_SET_BATCH_FOLDER": {
+        "level": INFO,
+        "template": "GUI: Input mode set to Batch Folder: {path}"
+    },
+    "GUI_INPUT_MODE_SET_SINGLE_VIDEO": {
+        "level": INFO,
+        "template": "GUI: Input mode set to Single Video File: {path}"
+    },
+    "GUI_INPUT_MODE_SET_SINGLE_IMAGE": {
+        "level": INFO,
+        "template": "GUI: Input mode set to Single Image File: {path}"
+    },
+    "GUI_INPUT_MODE_UNKNOWN_SINGLE_FILE_WARN": {
+        "level": WARNING,
+        "template": "GUI: Could not determine type of single file: {path}. Assuming video."
+    },
+    "GUI_INPUT_PATH_INVALID_ERROR": {
+        "level": ERROR,
+        "template": "GUI: Input path is invalid or does not exist: {path}."
+    },
+    "GUI_START_THREAD_INVALID_MODE_ERROR": {
+        "level": ERROR,
+        "template": "GUI Start Thread: Invalid internal input mode '{mode}'."
+    },
+    "GUI_NO_VALID_SOURCES_FOUND": {
+        "level": WARNING,
+        "template": "GUI: No valid video files or image sequences found in '{path_scanned}' for mode '{mode}'."
+    },
+    "GUI_ORIGINAL_VIDEO_MOVE_SKIPPED_SINGLE_MODE": {
+        "level": INFO,
+        "template": "GUI: Skipped moving original source '{basename}' (single file/sequence mode)."
+    },
+    "GUI_JOB_UNKNOWN_SOURCE_TYPE_ERROR":{
+        "level": ERROR,
+        "template": "GUI Process Job: Unknown source type '{type}' for '{basename}'."
+    },
+    "VIDEO_UNKNOWN_DATASET_NO_DIMS_ERROR": {
+        "level": ERROR,
+        "template": "Video Read: Unknown dataset '{dataset_name}' for '{video_path}' and could not determine original dimensions for fallback."
+    },
+    "VIDEO_READ_METADATA_EMPTY_FRAME_WARN": {
+        "level": WARNING,
+        "template": "Video Read Metadata: Could not get frame data from '{video_path}' (possibly corrupt or empty first frame)."
+    },
+    "VIDEO_READ_METADATA_ZERO_LENGTH_WARN": {
+        "level": WARNING,
+        "template": "Video Read Metadata: Video '{video_path}' has zero length."
+    },
+    "VIDEO_INVALID_FPS_METADATA_WARN": {
+        "level": WARNING,
+        "template": "Video Read: Invalid FPS ({fps_read}) from metadata for '{video_path}'. Falling back."
+    },
+    "VIDEO_READ_NO_ORIGINAL_DIMS_ERROR": {
+        "level": ERROR,
+        "template": "Video Read: Could not obtain original dimensions for '{video_path}' during metadata scan. Cannot proceed with dimension calculation."
+    },
+    "VIDEO_READ_ZERO_DIM_SCALE_ERROR": {
+        "level": ERROR,
+        "template": "Video Read: Original dimension is zero for '{video_path}', cannot calculate scale for resizing. Falling back."
+    },
+    "GUI_CONFIG_LOADED_INFO": {
+        "level": INFO,
+        "template": "GUI: Configuration loaded from '{filename}'."
+    },
+    "GUI_CONFIG_NOT_FOUND_INFO": {
+        "level": INFO,
+        "template": "GUI: Configuration file '{filename}' not found. Using default settings."
+    },
+    "GUI_INPUT_PATH_INVALID_FOR_MODE_DETECT": {
+        "level": WARNING,
+        "template": "GUI Input: Path '{path}' is invalid or does not exist. Cannot determine input mode accurately."
+    },
+    "GUI_INPUT_MODE_UNKNOWN_TYPED_FILE_WARN": {
+        "level": WARNING,
+        "template": "GUI Input: Typed path '{path}' is a file of unknown type. Treating as non-single source."
+    },
+    "GUI_INPUT_PATH_NOT_FILE_OR_DIR_WARN": {
+        "level": WARNING,
+        "template": "GUI Input: Path '{path}' exists but is not a regular file or directory."
+    },
+    "GUI_INPUT_MODE_DETERMINED": {
+        "level": DEBUG, # Or INFO if you want to see it always
+        "template": "GUI Input: Determined mode for path '{path}' as '{mode}', is_single_source: {is_single}."
+    },
+    "GUI_INPUT_PATH_EMPTY_ERROR": {
+        "level": ERROR,
+        "template": "GUI Input: Input path field is empty. Please provide a source."
+    },
+    "GUI_INPUT_PATH_NOT_DIR_FOR_BATCH_ERROR": {
+        "level": ERROR,
+        "template": "GUI Input: Path '{path}' is not a directory, but batch processing mode was attempted."
+    },
+    "GUI_LISTDIR_OS_ERROR": {
+        "level": ERROR,
+        "template": "GUI Input: OS error when trying to list directory '{path}'. Error: {error}"
+    },
+    "GUI_START_THREAD_UNEXPECTED_MODE_AFTER_DETERMINATION": {
+        "level": CRITICAL,
+        "template": "GUI Start Thread: Unexpected mode '{mode}' for path '{path}' after explicit determination. This indicates a logic error."
+    },
+    "GUI_UNKNOWN_SOURCE_SPEC_TYPE_ERROR": {
+         "level": ERROR,
+         "template": "GUI Start Thread: Unknown source_spec type '{type}' for basename '{basename}'. Cannot map to define_video_segments source type."
+    },
+    "FRAMES_LOAD_FROM_SINGLE_IMG_INFO": {
+        "level": DETAIL,
+        "template": "Frames Load: Loaded {num_frames} frames from single image '{image_path}' at {fps:.1f} FPS (for 1s clip)."
+    },
+    "IMAGE_SAVE_EXR_SEQ_UTIL_ERROR": {
+        "level": ERROR,
+        "template": "Error saving EXR sequence (path: {dir_path}): {error}" # Simplified template
+    },
+    "IMAGE_SAVE_SINGLE_EXR_UTIL_ERROR": {
+        "level": ERROR,
+        "template": "Error saving single EXR (filepath: {filepath}): {error}" # Simplified template
+    },
+    "IMAGE_SAVE_EXR_FRAME_ERROR": {
+        "level": ERROR,
+        "template": "Error saving frame to EXR file '{filepath}': {error}"
+    },
+    "IMAGE_SEQUENCE_LOAD_INVALID_START_INDEX": {
+        "level": ERROR,
+        "template": "Image Sequence Load: Invalid start_index {start_index} for folder '{folder_path}'. Total images: {total_images}."
+    },
+    "IMAGE_SEQUENCE_LOAD_NO_FRAMES_FOR_SEGMENT": {
+        "level": WARNING,
+        "template": "Image Sequence Load: No image frames found for segment in '{folder_path}' (start: {start_index}, num_to_load: {num_to_load}, end_calc: {end_index_calc}, total_in_folder: {total_images_in_folder})."
+    },
+    "IMAGE_SEQUENCE_REF_FRAME_READ_ERROR": {
+        "level": ERROR,
+        "template": "Image Sequence Load: Error reading reference frame '{filepath}' for consistent resizing. Error: {error}"
+    },
+    # Modify existing IMAGE_SEQUENCE_LOAD_SUCCESS to include segment_start_index if you want
+    "IMAGE_SEQUENCE_LOAD_SUCCESS": {
+        "level": DETAIL,
+        "template": "Image Sequence Load: Successfully loaded {num_frames} frames from '{folder_path}' (H:{height}, W:{width}, Segment Start Idx: {segment_start_index})."
+    },
+    # Modify FRAMES_LOAD_FROM_IMG_SEQ_INFO to include start_index and num_loaded
+    "FRAMES_LOAD_FROM_IMG_SEQ_INFO": {
+        "level": DETAIL,
+        "template": "Frames Load: Attempting to load image sequence from '{folder_path}'. Target FPS: {fps:.3f}. Segment Start Idx: {start_index}, Num to Load: {num_loaded}. Loaded: {num_frames} frames."
+    },
+    "LOGIC_SAVE_FPS_STILL_NEGATIVE_WARN": {
+        "level": WARNING,
+        "template": "Logic Save Video: FPS value is still -1.0 at save point, falling back. FPS: {fps_val}"
+    },
+    "LOGIC_SAVE_FPS_ZERO_OR_NEGATIVE_WARN": {
+        "level": WARNING,
+        "template": "Logic Save Video: FPS value is zero or negative at save point, falling back. FPS: {fps_val}"
+    },
 
     # Resume logic messages
     "GUI_RESUME_REPROCESS_FAILED_MASTER_START": { "template": "Attempting to re-process failed segments for {basename} based on existing master metadata.", "level": INFO },
@@ -808,7 +1030,7 @@ MESSAGES = {
     "GUI_RESUME_SKIPPING_FINALIZED": { "template": "Skipping {basename} (user chose to cancel on finalized segments).", "level": INFO },
     "GUI_RESUME_INCOMPLETE_START": { "template": "Attempting to resume incomplete segments for {basename}.", "level": INFO },
     "GUI_RESUME_INCOMPLETE_SEGMENT_REPROCESS": { "template": "  Segment {segment_id}/{total_segments} for {basename} found but not successful (status: {status}). Will re-process.", "level": INFO },
-    "GUI_RESUME_INCOMPLETE_SEGMENT_MISSING": { "template": "  Segment {segment_id}/{total_segments} for {basename} (NPZ: {npz_filename}) not found or JSON missing. Will process.", "level": INFO },
+    "GUI_RESUME_INCOMPLETE_SEGMENT_MISSING": { "template": "  Segment {segment_id}/{total_segments} for {basename} (NPZ: {npz_filename}) not found or JSON missing. Will process.", "level": DETAIL },
     "GUI_RESUME_ALL_SEGS_COMPLETE_NO_MASTER_WARN": { "template": "  All segments for {basename} appear complete from individual files, but master_meta was missing. Consider re-merging. Skipping processing.", "level": WARNING },
     "GUI_RESUME_NO_SEGS_TO_RUN_INCOMPLETE_WARN": { "template": "  No segments to run for {basename}, but not all were found complete. Total defined: {total_defined}, Found complete: {found_complete}", "level": WARNING },
     "GUI_RESUME_DELETING_INCOMPLETE_START": { "template": "User chose to delete existing incomplete segment folder and start fresh for {basename}: {path}", "level": DETAIL },
@@ -823,8 +1045,8 @@ MESSAGES = {
 
     # File Operations
     "FILE_NOT_FOUND": {"template": "File not found: {filepath}", "level": ERROR},
-    "FILE_LOAD_SUCCESS": {"template": "Successfully loaded: {filepath}", "level": INFO},
-    "FILE_SAVE_SUCCESS": {"template": "Successfully saved: {filepath}", "level": INFO},
+    "FILE_LOAD_SUCCESS": {"template": "Successfully loaded: {filepath}", "level": DETAIL},
+    "FILE_SAVE_SUCCESS": {"template": "Successfully saved: {filepath}", "level": DETAIL},
     "FILE_SAVE_FAILURE": {"template": "Failed to save: {filepath}. Reason: {reason}", "level": ERROR},
     "JSON_DECODE_ERROR": {"template": "Could not decode JSON from: {filepath}. Reason: {reason}", "level": ERROR},
     "NPZ_LOAD_KEY_ERROR": {"template": "Key '{key}' not found in NPZ: {filepath}", "level": ERROR},

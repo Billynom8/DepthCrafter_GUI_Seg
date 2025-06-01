@@ -1,6 +1,7 @@
 import threading
 import gc
 import os
+import sys
 import glob
 import shutil
 import json # Keep for config.json, help_content.json, settings.json
@@ -31,6 +32,8 @@ from depthcrafter.utils import (
     get_segment_npz_output_filename,
     get_full_video_output_filename,
     get_sidecar_json_filename,
+    get_image_sequence_metadata, # New
+    get_single_image_metadata,   # New
     define_video_segments, # This util now uses global_log_message
     load_json_file, # This util now uses global_log_message
     save_json_file, # This util now uses global_log_message
@@ -60,12 +63,16 @@ except ImportError:
 
 from typing import Optional, Tuple, List, Dict
 
+GUI_VERSION = "25.06.01"
+
 class DepthCrafterGUI:
     CONFIG_FILENAME = "config.json"
     HELP_CONTENT_FILENAME = "help_content.json"
     MOVE_ORIGINAL_TO_FINISHED_FOLDER_ON_COMPLETION = True
     SETTINGS_FILETYPES = [("JSON files", "*.json"), ("All files", "*.*")]
     LAST_SETTINGS_DIR_CONFIG_KEY = "last_settings_dir"
+    VIDEO_EXTENSIONS = ["*.mp4", "*.avi", "*.mov", "*.mkv", "*.webm", "*.flv", "*.gif"]
+    IMAGE_EXTENSIONS = ["*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tiff", "*.exr"]
 
     # Replaces the old self.log_message. This method's job is to put messages onto the GUI queue.
     def _queue_message_for_gui_log(self, message_string: str):
@@ -214,9 +221,8 @@ class DepthCrafterGUI:
 
     def __init__(self, root):
         self.root = root
-        self.root.title("DepthCrafter GUI SEG")
-        # ... (variable initializations remain the same) ...
-        self.input_dir = tk.StringVar(value=os.path.normpath("./input_clips"))
+        self.root.title(f"DepthCrafter GUI Seg {GUI_VERSION}")
+        self.input_dir_or_file_var = tk.StringVar(value=os.path.normpath("./input_clips"))
         self.output_dir = tk.StringVar(value=os.path.normpath("./output_depthmaps"))
         self.guidance_scale = tk.DoubleVar(value=1.0)
         self.inference_steps = tk.IntVar(value=5)
@@ -225,7 +231,7 @@ class DepthCrafterGUI:
         self.cpu_offload = tk.StringVar(value="model")
         self.use_cudnn_benchmark = tk.BooleanVar(value=True)
         self.process_length = tk.IntVar(value=-1)
-        self.target_fps = tk.IntVar(value=-1)
+        self.target_fps = tk.DoubleVar(value=-1.0)
         self.window_size = tk.IntVar(value=110)
         self.overlap = tk.IntVar(value=25)
         self.process_as_segments_var = tk.BooleanVar(value=False)
@@ -241,15 +247,26 @@ class DepthCrafterGUI:
         self.merge_norm_high_perc_var = tk.DoubleVar(value=99.9)
         self.keep_intermediate_npz_var = tk.BooleanVar(value=False)
         self.min_frames_to_keep_npz_var = tk.IntVar(value=0)
-        self.keep_intermediate_segment_visual_format_var = tk.StringVar(value="png_sequence")
-        self.merge_script_gui_silence_level_var = tk.StringVar(value="Normal") # This now maps to GUI verbosity
+        self.keep_intermediate_segment_visual_format_var = tk.StringVar(value="mp4")
+        self.merge_output_suffix_var = tk.StringVar(value="_depth") # New Variable
+        self.merge_script_gui_silence_level_var = tk.StringVar(value="Normal (Info)") # This now maps to GUI verbosity
+        self.current_input_mode = "batch_folder" # "batch_folder", "single_video_file", "single_image_file", "image_sequence_folder"
+        self.single_file_mode_active = False # True if a single file/sequence folder is explicitly loaded
+        self.effective_move_original_on_completion = self.MOVE_ORIGINAL_TO_FINISHED_FOLDER_ON_COMPLETION
 
         self.all_tk_vars = {
-            "input_dir": self.input_dir, "output_dir": self.output_dir,
-            "guidance_scale": self.guidance_scale, "inference_steps": self.inference_steps,
-            "max_res": self.max_res, "seed": self.seed, "cpu_offload": self.cpu_offload,
-            "use_cudnn_benchmark": self.use_cudnn_benchmark, "process_length": self.process_length,
-            "target_fps": self.target_fps, "window_size": self.window_size, "overlap": self.overlap,
+            "input_dir_or_file_var": self.input_dir_or_file_var, # Use new var name
+            "output_dir": self.output_dir,
+            "guidance_scale": self.guidance_scale,
+            "inference_steps": self.inference_steps,
+            "max_res": self.max_res,
+            "seed": self.seed,
+            "cpu_offload": self.cpu_offload,
+            "use_cudnn_benchmark": self.use_cudnn_benchmark,
+            "process_length": self.process_length,
+            "target_fps": self.target_fps,
+            "window_size": self.window_size,
+            "overlap": self.overlap,
             "process_as_segments_var": self.process_as_segments_var,
             "save_final_output_json_var": self.save_final_output_json_var,
             "merge_output_format_var": self.merge_output_format_var,
@@ -264,6 +281,7 @@ class DepthCrafterGUI:
             "keep_intermediate_npz_var": self.keep_intermediate_npz_var,
             "min_frames_to_keep_npz_var": self.min_frames_to_keep_npz_var,
             "keep_intermediate_segment_visual_format_var": self.keep_intermediate_segment_visual_format_var,
+            "merge_output_suffix_var": self.merge_output_suffix_var, # Add new var here
             "merge_script_gui_silence_level_var": self.merge_script_gui_silence_level_var, # Will be used to set GUI verbosity
         }
         self.initial_default_settings = self._collect_all_settings()
@@ -352,21 +370,28 @@ class DepthCrafterGUI:
         help_window.wait_window()
 
     def _collect_all_settings(self) -> dict:
-        # ... (unchanged) ...
         settings_data = {}
         for key, tk_var in self.all_tk_vars.items():
             try:
-                settings_data[key] = tk_var.get()
+                value = tk_var.get()
+                settings_data[key] = value
+                if key == "target_fps": # Specific debug for target_fps
+                    print(f"DEBUG: _collect_all_settings: target_fps raw value: {value}, type: {type(value)}")
             except tk.TclError:
-                global_log_message("GUI_SETTINGS_GET_VAL_WARN", setting_key=key) # New ID
+                global_log_message("GUI_SETTINGS_GET_VAL_WARN", setting_key=key)
         return settings_data
 
     def _apply_all_settings(self, settings_data: dict):
-        # ... (mostly unchanged, just logging) ...
-        for key, value in settings_data.items():
+        for key, value_from_json in settings_data.items():
+            if key == "target_fps": # Specific debug
+                print(f"DEBUG: _apply_all_settings: Loading target_fps from JSON. Value: {value_from_json}, Type: {type(value_from_json)}")
             if key in self.all_tk_vars:
                 try:
-                    self.all_tk_vars[key].set(value)
+                    self.all_tk_vars[key].set(value_from_json)
+                    # After setting, get it back to see what DoubleVar stored
+                    if key == "target_fps":
+                        val_in_doublevar = self.all_tk_vars[key].get()
+                        print(f"DEBUG: _apply_all_settings: target_fps in DoubleVar after set: {val_in_doublevar}, Type: {type(val_in_doublevar)}")
                 except tk.TclError:
                      global_log_message("GUI_SETTINGS_SET_VAL_WARN", setting_key=key, value=value) # New ID
             else:
@@ -552,39 +577,54 @@ class DepthCrafterGUI:
         return entry
 
     def _process_single_job(self, demo, job_info, master_meta_for_this_vid):
+        # job_info is the complete dictionary for this specific job (segment or full)
+        # It already contains "video_path", "source_type", "original_basename", "gui_fps_setting_at_definition", etc.
+        # and if it's a segment, it has "segment_id", "num_frames_to_load_raw", etc.
+        
         returned_job_specific_metadata = {}
         job_successful = False
-        is_segment_job = job_info["is_segment"]
+        is_segment_job = job_info.get("is_segment", False) # Get from job_info
         original_basename = job_info["original_basename"]
-        # log_msg_prefix used by DepthCrafterDemo.run through global_log_message
         
         snapshotted_settings = master_meta_for_this_vid["global_processing_settings"]
-        # ... (parameter setup unchanged) ...
         guidance_scale_for_job = snapshotted_settings["guidance_scale"]
         inference_steps_for_job = snapshotted_settings["inference_steps"]
         max_res_for_job = snapshotted_settings["max_res_settings"]
         seed_for_job = snapshotted_settings["seed_setting"]
-        target_fps_for_job = snapshotted_settings["target_fps_setting"]
-        process_length_for_run = snapshotted_settings["process_max_frames_setting"] if not is_segment_job else -1
+        # target_fps_for_job is part of job_info["gui_fps_setting_at_definition"]
+
+        # process_length_for_run: for full video, it's from GUI settings.
+        # For segments, it's implicitly defined by job_info["num_frames_to_load_raw"].
+        # demo.run's `process_length_for_read_full_video` is for the "full source" if not segmented.
+        process_length_for_run_param = snapshotted_settings["process_max_frames_setting"] if not is_segment_job else -1
+        
         window_size_for_pipe_call = snapshotted_settings["gui_window_size_setting"]
         overlap_for_pipe_call = snapshotted_settings["gui_overlap_setting"]
+
         try:
             keep_npz_for_this_job_run = False
             if is_segment_job:
                 if self.keep_intermediate_npz_var.get():
                     min_frames_thresh = self.min_frames_to_keep_npz_var.get()
-                    orig_vid_frame_count = master_meta_for_this_vid.get("original_video_details", {}).get("raw_frame_count", 0)
+                    # Get orig_vid_frame_count from job_info itself, as it's part of base_job_info
+                    orig_vid_frame_count = job_info.get("original_video_raw_frame_count", 0)
                     if min_frames_thresh <= 0 or orig_vid_frame_count >= min_frames_thresh:
                         keep_npz_for_this_job_run = True
             
-            # DepthCrafterDemo.run will use global_log_message for its internal logging
+            # Pass the *entire job_info* as the first argument to demo.run
+            # If it's a segment, also pass it as segment_job_info_param for clarity in demo.run's logic.
             saved_data_filepath, returned_job_specific_metadata = demo.run(
-                video_path_or_frames=job_info["video_path"],
-                num_denoising_steps=inference_steps_for_job, guidance_scale=guidance_scale_for_job,
-                base_output_folder=self.output_dir.get(), gui_window_size=window_size_for_pipe_call,
-                gui_overlap=overlap_for_pipe_call, process_length_for_read_full_video=process_length_for_run,
-                max_res=max_res_for_job, seed=seed_for_job, original_video_basename_override=original_basename,
-                target_fps_for_read_and_save=target_fps_for_job, segment_job_info_param=job_info if is_segment_job else None,
+                video_path_or_frames_or_info=job_info, # Pass the whole job spec here
+                num_denoising_steps=inference_steps_for_job, 
+                guidance_scale=guidance_scale_for_job,
+                base_output_folder=self.output_dir.get(), 
+                gui_window_size=window_size_for_pipe_call,
+                gui_overlap=overlap_for_pipe_call, 
+                process_length_for_read_full_video=process_length_for_run_param, 
+                max_res=max_res_for_job, 
+                seed=seed_for_job, 
+                original_video_basename_override=original_basename, # Can also get from job_info
+                segment_job_info_param=job_info if is_segment_job else None, # Pass job_info again if it's a segment
                 keep_intermediate_npz_config=keep_npz_for_this_job_run,
                 intermediate_segment_visual_format_config=self.keep_intermediate_segment_visual_format_var.get(),
                 save_final_json_for_this_job_config=self.save_final_output_json_var.get()
@@ -645,10 +685,10 @@ class DepthCrafterGUI:
         except Exception as e:
             global_log_message("PROCESSING_FINALIZE_ERROR", item_name=original_basename, error_message=str(e)) # Using existing ID
         
-        if self.MOVE_ORIGINAL_TO_FINISHED_FOLDER_ON_COMPLETION:
+        if self.effective_move_original_on_completion:
             self._move_original_video_to_finished(current_video_path, original_basename)
         else:
-            global_log_message("GUI_ORIGINAL_VIDEO_MOVE_SKIPPED", basename=original_basename) # New ID
+            global_log_message("GUI_ORIGINAL_VIDEO_MOVE_SKIPPED_SINGLE_MODE", basename=original_basename) # New ID
 
     def _move_original_video_to_finished(self, current_video_path, original_basename):
         global_log_message("GUI_ORIGINAL_VIDEO_MOVE_ATTEMPT", basename=original_basename) # New ID
@@ -709,18 +749,13 @@ class DepthCrafterGUI:
             global_log_message("MERGE_MODULE_UNAVAILABLE", video_name=original_basename) # Use existing
             return False, "N/A (Merge module not available)"
         
-        # merge_depth_segments now uses global_log_message, no need to set its callback
-        # global_log_message("MERGE_STARTED", video_name=original_basename) # This is now handled by merge_depth_segments itself
-        
         out_fmt = self.merge_output_format_var.get()
-        # Use output_filename_override_base to make it clear this is a "remerged" or "merged" output from GUI context
-        merged_base_name = f"{original_basename}_merged_depth" # Suggestion, or use what re_merge_from_gui uses
+        output_suffix = self.merge_output_suffix_var.get() # Get the suffix
+        merged_base_name = f"{original_basename}{output_suffix}" # Use suffix
 
         align_method = "linear_blend" if self.merge_alignment_method_var.get() == "Linear Blend" else "shift_scale"
         merged_ok, actual_path = False, None
         try:
-            # Verbosity for merge_depth_segments is set by its own __main__ or by GUI via message_catalog.set_console_verbosity if run in same process
-            # The GUI's own log verbosity is separate (set_gui_verbosity)
             actual_path = merge_depth_segments.merge_depth_segments(
                 master_meta_path=master_meta_filepath, output_path_arg=main_output_dir,
                 do_dithering=self.merge_dither_var.get(), dither_strength_factor=self.merge_dither_strength_var.get(),
@@ -728,38 +763,43 @@ class DepthCrafterGUI:
                 use_percentile_norm=self.merge_percentile_norm_var.get(), norm_low_percentile=self.merge_norm_low_perc_var.get(),
                 norm_high_percentile=self.merge_norm_high_perc_var.get(), output_format=out_fmt,
                 merge_alignment_method=align_method, 
-                # script_caller_silence_level removed
-                output_filename_override_base=merged_base_name # Pass the specific base name for merged output
+                output_filename_override_base=merged_base_name 
             )
-            # merge_depth_segments logs its own completion message.
             merged_ok = bool(actual_path)
-        except Exception as e: # merge_depth_segments should log its own critical error
-            global_log_message("GUI_MERGE_CALL_EXCEPTION", basename=original_basename, error=str(e), traceback_info=sys.exc_info()) # New ID
-        # final_path logic unchanged
+        except Exception as e: 
+            global_log_message("GUI_MERGE_CALL_EXCEPTION", basename=original_basename, error=str(e), traceback_info=sys.exc_info()) 
+        
         final_path_to_return = "N/A (Merge failed/path not returned)"
         if merged_ok and actual_path:
             final_path_to_return = actual_path
-        elif merged_ok : # actual_path might be None if merge script determined path itself, but it should return it
-            # This case might indicate an issue with how merge_depth_segments returns path
-             global_log_message("GUI_MERGE_PATH_RETURN_ISSUE_WARN", basename=original_basename) # New ID
-             final_path_to_return = os.path.join(main_output_dir, f"{merged_base_name}.{out_fmt}") # Fallback guess
+        elif merged_ok : 
+             global_log_message("GUI_MERGE_PATH_RETURN_ISSUE_WARN", basename=original_basename) 
+             # Construct expected filename if actual_path is None but merged_ok is True
+             effective_out_fmt = out_fmt.replace("_main10", "")
+             final_path_to_return = os.path.join(main_output_dir, f"{merged_base_name}.{effective_out_fmt}") 
         
         return merged_ok, final_path_to_return
 
     def _save_final_output_sidecar_json(self, original_basename, final_merged_path, master_meta_filepath, master_meta, was_segments, merge_successful):
-        # ... (logic for json_content largely unchanged, ensure logging uses global_log_message) ...
         json_path, json_content = None, {}
-        # ... (content building logic as before) ...
+        output_suffix_val = self.merge_output_suffix_var.get() # Get suffix for consistency if needed
+
         if was_segments:
             if merge_successful and final_merged_path and not final_merged_path.startswith("N/A"):
-                out_fmt = self.merge_output_format_var.get()
+                out_fmt_selected = self.merge_output_format_var.get()
+                
+                # The final_output_path is the actual path, extension is part of it.
+                # The final_output_format should reflect the selection.
                 json_content = {
                     "source_video_basename": original_basename, "processing_mode": "segmented_then_merged",
-                    "final_output_path": os.path.abspath(final_merged_path), "final_output_format": out_fmt,
+                    "final_output_path": os.path.abspath(final_merged_path), 
+                    "final_output_format_selected": out_fmt_selected,
                     "master_metadata_path_source": os.path.abspath(master_meta_filepath) if master_meta_filepath else None,
                     "global_processing_settings_summary": master_meta.get("global_processing_settings"),
                     "merge_settings_summary": {
-                        "output_format": out_fmt, "alignment_method": self.merge_alignment_method_var.get(),
+                        "output_format_selected": out_fmt_selected, 
+                        "output_suffix": output_suffix_val,
+                        "alignment_method": self.merge_alignment_method_var.get(),
                         "dithering": self.merge_dither_var.get(), "dither_strength": self.merge_dither_strength_var.get(),
                         "gamma_correction": self.merge_gamma_correct_var.get(),
                         "gamma_value_if_applied": self.merge_gamma_value_var.get() if self.merge_gamma_correct_var.get() else 1.0,
@@ -771,43 +811,39 @@ class DepthCrafterGUI:
                     json_path = os.path.join(os.path.dirname(final_merged_path.rstrip(os.sep)), f"{os.path.basename(final_merged_path.rstrip(os.sep))}.json")
                 elif os.path.isfile(final_merged_path):
                     json_path = get_sidecar_json_filename(final_merged_path)
-                else: global_log_message("GUI_FINAL_JSON_PATH_DETERMINE_ERROR_MERGED", basename=original_basename, path=final_merged_path) # New ID
-            else: global_log_message("GUI_FINAL_JSON_SKIPPED_MERGE_FAIL", basename=original_basename) # New ID
-        else: # Full video
+                else: global_log_message("GUI_FINAL_JSON_PATH_DETERMINE_ERROR_MERGED", basename=original_basename, path=final_merged_path) 
+            else: global_log_message("GUI_FINAL_JSON_SKIPPED_MERGE_FAIL", basename=original_basename) 
+        else: # Full video (output_suffix doesn't apply here, _depth is hardcoded in get_full_video_output_filename)
             if master_meta and master_meta.get("jobs_info"):
                 job_info = master_meta["jobs_info"][0]
-                # Assuming 'output_video_filename' is the key in job_info for the relative filename
-                # and that it's stored in the 'main_output_dir' (self.output_dir.get())
-                relative_output_filename = job_info.get("output_video_filename") # From _initialize_job_metadata
+                relative_output_filename = job_info.get("output_video_filename") 
                 if relative_output_filename:
-                    # Construct full path. If segment folder was made, it might be there.
-                    # For full video, it should be in self.output_dir.get() directly.
                     out_path = os.path.join(self.output_dir.get(), relative_output_filename)
-                    out_fmt = os.path.splitext(relative_output_filename)[1].lstrip('.') # Get format from filename
+                    out_fmt_from_ext = os.path.splitext(relative_output_filename)[1].lstrip('.') 
 
                     json_content = {
                         "source_video_basename": original_basename, "processing_mode": "full_video",
-                        "final_output_path": os.path.abspath(out_path), "final_output_format": out_fmt,
+                        "final_output_path": os.path.abspath(out_path), 
+                        "final_output_format": out_fmt_from_ext, # Actual format from extension
                         "global_processing_settings": master_meta.get("global_processing_settings"),
                         "job_specific_details": job_info,
                         "generation_timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                     }
-                    # Path determination for JSON remains same as before (isdir/isfile)
-                    if os.path.isdir(out_path): # Should not happen for full video mp4
+                    if os.path.isdir(out_path): 
                          json_path = os.path.join(os.path.dirname(out_path.rstrip(os.sep)), f"{os.path.basename(out_path.rstrip(os.sep))}.json")
                     elif os.path.isfile(out_path):
                         json_path = get_sidecar_json_filename(out_path)
-                    else: global_log_message("GUI_FINAL_JSON_PATH_DETERMINE_ERROR_FULL", basename=original_basename, path=out_path) # New ID
-                else: global_log_message("GUI_FINAL_JSON_SKIPPED_FULL_NO_PATH_INFO", basename=original_basename) # New ID
-            else: global_log_message("GUI_FINAL_JSON_SKIPPED_FULL_NO_MASTER_META", basename=original_basename) # New ID
+                    else: global_log_message("GUI_FINAL_JSON_PATH_DETERMINE_ERROR_FULL", basename=original_basename, path=out_path) 
+                else: global_log_message("GUI_FINAL_JSON_SKIPPED_FULL_NO_PATH_INFO", basename=original_basename) 
+            else: global_log_message("GUI_FINAL_JSON_SKIPPED_FULL_NO_MASTER_META", basename=original_basename) 
 
         if json_path and json_content:
-            global_log_message("GUI_FINAL_JSON_SAVE_ATTEMPT", path=json_path) # New ID
-            if save_json_file(json_content, json_path): # Util logs success/fail
-                global_log_message("GUI_FINAL_JSON_SAVE_SUCCESS", path=json_path) # New ID
+            global_log_message("GUI_FINAL_JSON_SAVE_ATTEMPT", path=json_path) 
+            if save_json_file(json_content, json_path): 
+                global_log_message("GUI_FINAL_JSON_SAVE_SUCCESS", path=json_path) 
         elif self.save_final_output_json_var.get():
             mode = "merged" if was_segments else "full video"
-            global_log_message("GUI_FINAL_JSON_NOT_CREATED_WARN", mode=mode, basename=original_basename) # New ID
+            global_log_message("GUI_FINAL_JSON_NOT_CREATED_WARN", mode=mode, basename=original_basename)
 
     def _cleanup_segment_folder(self, segment_subfolder_path, original_basename, master_meta):
         del_folder = False
@@ -853,14 +889,19 @@ class DepthCrafterGUI:
             # "Developer (Debug)" # Optional
         ]
 
-        dir_frame = tk.LabelFrame(self.root, text="Directories")
-        dir_frame.pack(fill="x", padx=10, pady=5, expand=False)
-        tk.Label(dir_frame, text="Input Folder:").grid(row=0, column=0, sticky="e", padx=5, pady=2)
-        self.entry_input_dir = tk.Entry(dir_frame, textvariable=self.input_dir, width=50)
-        self.entry_input_dir.grid(row=0, column=1, padx=5, pady=2)
-        self.browse_input_btn = tk.Button(dir_frame, text="Browse", command=self.browse_input)
-        self.browse_input_btn.grid(row=0, column=2, padx=5, pady=2)
-        self.widgets_to_disable_during_processing.extend([self.entry_input_dir, self.browse_input_btn])
+        dir_frame = tk.LabelFrame(self.root, text="Input Source") # Renamed frame
+        dir_frame.pack(fill="x", padx=10, pady=5, expand=False)        
+        tk.Label(dir_frame, text="Input Folder/File:").grid(row=0, column=0, sticky="e", padx=5, pady=2)
+        self.entry_input_dir_or_file = tk.Entry(dir_frame, textvariable=self.input_dir_or_file_var, width=50) # Use new var
+        self.entry_input_dir_or_file.grid(row=0, column=1, padx=5, pady=2, sticky="ew")        
+        browse_buttons_frame = tk.Frame(dir_frame)
+        browse_buttons_frame.grid(row=0, column=2, padx=5, pady=0, sticky="w")
+        self.browse_input_folder_btn = tk.Button(browse_buttons_frame, text="Browse Folder", command=self.browse_input_folder)
+        self.browse_input_folder_btn.pack(side=tk.LEFT, padx=(0,2))        
+        self.browse_single_file_btn = tk.Button(browse_buttons_frame, text="Load Single File", command=self.browse_single_input_file) # New button
+        self.browse_single_file_btn.pack(side=tk.LEFT, padx=(2,0))
+        dir_frame.columnconfigure(1, weight=1) # Allow entry to expand
+        self.widgets_to_disable_during_processing.extend([self.entry_input_dir_or_file, self.browse_input_folder_btn, self.browse_single_file_btn])
 
         tk.Label(dir_frame, text="Output Folder:").grid(row=1, column=0, sticky="e", padx=5, pady=2)
         self.entry_output_dir = tk.Entry(dir_frame, textvariable=self.output_dir, width=50)
@@ -918,6 +959,7 @@ class DepthCrafterGUI:
         self.keep_npz_dependent_widgets = []
         row_idx = 0
 
+        # Keep intermediate NPZ options GUI
         self.keep_npz_cb = tk.Checkbutton(merge_opts_frame, text="Keep intermediate NPZ files", variable=self.keep_intermediate_npz_var, command=self.toggle_keep_npz_dependent_options_state)
         self.keep_npz_cb.grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
         hl_knpz = self._add_manual_help_icon(merge_opts_frame, "keep_npz", row_idx, 2, sticky="w", padx=(0,5))
@@ -932,20 +974,23 @@ class DepthCrafterGUI:
         self.keep_npz_dependent_widgets.extend([self.lbl_min_frames_npz, self.entry_min_frames_npz, hl_mfn])
         self.widgets_to_disable_during_processing.extend([self.lbl_min_frames_npz, self.entry_min_frames_npz, hl_mfn]); row_idx += 1
 
+        # Segment Visual Format options GUI
         self.lbl_intermediate_fmt = tk.Label(merge_opts_frame, text="  ↳ Segment Visual Format:")
         self.lbl_intermediate_fmt.grid(row=row_idx, column=0, sticky="e", padx=(20,2), pady=2)
-        combo_intermediate_fmt_values = ["png_sequence", "mp4", "none"]
+        combo_intermediate_fmt_values = ["png_sequence", "mp4", "main10_mp4", "none"]
         if OPENEXR_AVAILABLE_GUI: combo_intermediate_fmt_values.extend(["exr_sequence", "exr"])
         self.combo_intermediate_fmt = ttk.Combobox(merge_opts_frame, textvariable=self.keep_intermediate_segment_visual_format_var, values=combo_intermediate_fmt_values, width=17, state="readonly")
         self.combo_intermediate_fmt.grid(row=row_idx, column=1, padx=(0,2), pady=2, sticky="w")
         hl_sif = self._add_manual_help_icon(merge_opts_frame, "segment_visual_format", row_idx, 2, sticky="w", padx=(0,5))
         self.keep_npz_dependent_widgets.extend([self.lbl_intermediate_fmt, self.combo_intermediate_fmt, hl_sif])
         self.widgets_to_disable_during_processing.extend([self.lbl_intermediate_fmt, self.combo_intermediate_fmt, hl_sif]); row_idx += 1
+        self.toggle_keep_npz_dependent_options_state() # Call after creation
 
+        # Dithering, Gamma, Percentile Norm options remain the same, ensure row_idx continues correctly
         self.merge_dither_cb = tk.Checkbutton(merge_opts_frame, text="Dithering (MP4)", variable=self.merge_dither_var, command=self.toggle_dither_options_active_state)
         self.merge_dither_cb.grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
         dither_details_frame = tk.Frame(merge_opts_frame)
-        dither_details_frame.grid(row=row_idx, column=1, sticky="w", padx=(0,0))
+        dither_details_frame.grid(row=row_idx, column=1, sticky="w", padx=(0,0)) # Ensure it doesn't span too far
         self.lbl_dither_str = tk.Label(dither_details_frame, text="Strength:")
         self.lbl_dither_str.pack(side=tk.LEFT, padx=(0, 2))
         self.entry_dither_str = tk.Entry(dither_details_frame, textvariable=self.merge_dither_strength_var, width=7)
@@ -954,6 +999,7 @@ class DepthCrafterGUI:
         self.merge_related_widgets_references.append((self.merge_dither_cb, dither_details_frame, hl_mds))
         self.widgets_to_disable_during_processing.extend([self.merge_dither_cb, self.lbl_dither_str, self.entry_dither_str, hl_mds]); row_idx += 1
 
+        # Gamma options GUI
         self.merge_gamma_cb = tk.Checkbutton(merge_opts_frame, text="Gamma Correct (MP4)", variable=self.merge_gamma_correct_var, command=self.toggle_gamma_options_active_state)
         self.merge_gamma_cb.grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
         gamma_details_frame = tk.Frame(merge_opts_frame)
@@ -966,12 +1012,13 @@ class DepthCrafterGUI:
         self.merge_related_widgets_references.append((self.merge_gamma_cb, gamma_details_frame, hl_mgv))
         self.widgets_to_disable_during_processing.extend([self.merge_gamma_cb, self.lbl_gamma_val, self.entry_gamma_val, hl_mgv]); row_idx += 1
 
+        # Percentile Normalization options GUI
         self.merge_perc_norm_cb = tk.Checkbutton(merge_opts_frame, text="Percentile Normalization", variable=self.merge_percentile_norm_var, command=self.toggle_percentile_norm_options_active_state)
         self.merge_perc_norm_cb.grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
         hl_mpncb = self._add_manual_help_icon(merge_opts_frame, "merge_percentile_norm", row_idx, 2, sticky="w", padx=(0,5))
         self.merge_related_widgets_references.append((self.merge_perc_norm_cb, hl_mpncb))
         self.widgets_to_disable_during_processing.extend([self.merge_perc_norm_cb, hl_mpncb]); row_idx += 1
-
+        
         low_high_frame = tk.Frame(merge_opts_frame)
         low_high_frame.grid(row=row_idx, column=1, sticky="w", padx=(0,0))
         self.lbl_low_perc = tk.Label(low_high_frame, text="Low:")
@@ -982,18 +1029,12 @@ class DepthCrafterGUI:
         self.lbl_high_perc.pack(side=tk.LEFT, padx=(0,2))
         self.entry_high_perc = tk.Entry(low_high_frame, textvariable=self.merge_norm_high_perc_var, width=7)
         self.entry_high_perc.pack(side=tk.LEFT, padx=(0,0))
-        tk.Label(merge_opts_frame, text="  ↳").grid(row=row_idx, column=0, sticky="e", padx=(20,2))
-        self.merge_related_widgets_references.append((low_high_frame,))
+        tk.Label(merge_opts_frame, text="  ↳").grid(row=row_idx, column=0, sticky="e", padx=(20,2)) # Aligns with the checkbox
+        self.merge_related_widgets_references.append((low_high_frame,)) # Note: only the frame is added here for simplicity. The sub-widgets are handled by parent state.
         self.widgets_to_disable_during_processing.extend([self.lbl_low_perc, self.entry_low_perc, self.lbl_high_perc, self.entry_high_perc]); row_idx += 1
+        self.toggle_percentile_norm_options_active_state() # Call after creation
 
-        lbl_merge_fmt = tk.Label(merge_opts_frame, text="Output Format:")
-        lbl_merge_fmt.grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
-        self.combo_merge_fmt = ttk.Combobox(merge_opts_frame, textvariable=self.merge_output_format_var, values=["mp4", "png_sequence"] + (["exr_sequence", "exr"] if OPENEXR_AVAILABLE_GUI else []), width=17, state="readonly")
-        self.combo_merge_fmt.grid(row=row_idx, column=1, padx=(0,2), pady=2, sticky="w")
-        hl_mof = self._add_manual_help_icon(merge_opts_frame, "merge_output_format", row_idx, 2, sticky="w", padx=(0,5))
-        self.merge_related_widgets_references.append((lbl_merge_fmt, self.combo_merge_fmt, hl_mof))
-        self.widgets_to_disable_during_processing.extend([lbl_merge_fmt, self.combo_merge_fmt, hl_mof]); row_idx += 1
-
+        # Alignment Method (Moved Output Format below this)
         lbl_merge_alignment = tk.Label(merge_opts_frame, text="Alignment Method:")
         lbl_merge_alignment.grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
         self.combo_merge_alignment = ttk.Combobox(merge_opts_frame, textvariable=self.merge_alignment_method_var, values=["Shift & Scale", "Linear Blend"], width=17, state="readonly")
@@ -1001,18 +1042,38 @@ class DepthCrafterGUI:
         hl_mam = self._add_manual_help_icon(merge_opts_frame, "merge_alignment_method", row_idx, 2, sticky="w", padx=(0,5))
         self.merge_related_widgets_references.append((lbl_merge_alignment, self.combo_merge_alignment, hl_mam))
         self.widgets_to_disable_during_processing.extend([lbl_merge_alignment, self.combo_merge_alignment, hl_mam]); row_idx += 1
+        
+        # Output Format (Moved here)
+        lbl_merge_fmt = tk.Label(merge_opts_frame, text="Output Format:")
+        lbl_merge_fmt.grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        merge_fmt_values = ["mp4", "main10_mp4", "png_sequence"] + (["exr_sequence", "exr"] if OPENEXR_AVAILABLE_GUI else [])
+        self.combo_merge_fmt = ttk.Combobox(merge_opts_frame, textvariable=self.merge_output_format_var, values=merge_fmt_values, width=17, state="readonly")
+        self.combo_merge_fmt.grid(row=row_idx, column=1, padx=(0,2), pady=2, sticky="w")
+        hl_mof = self._add_manual_help_icon(merge_opts_frame, "merge_output_format", row_idx, 2, sticky="w", padx=(0,5))
+        self.merge_related_widgets_references.append((lbl_merge_fmt, self.combo_merge_fmt, hl_mof))
+        self.widgets_to_disable_during_processing.extend([lbl_merge_fmt, self.combo_merge_fmt, hl_mof]); row_idx += 1
 
+        # New: Output Suffix
+        lbl_merge_suffix = tk.Label(merge_opts_frame, text="Output Suffix:")
+        lbl_merge_suffix.grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        self.entry_merge_suffix = tk.Entry(merge_opts_frame, textvariable=self.merge_output_suffix_var, width=18) # Match combobox width
+        self.entry_merge_suffix.grid(row=row_idx, column=1, padx=(0,2), pady=2, sticky="w")
+        hl_mos = self._add_manual_help_icon(merge_opts_frame, "merge_output_suffix", row_idx, 2, sticky="w", padx=(0,5))
+        self.merge_related_widgets_references.append((lbl_merge_suffix, self.entry_merge_suffix, hl_mos))
+        self.widgets_to_disable_during_processing.extend([lbl_merge_suffix, self.entry_merge_suffix, hl_mos]); row_idx += 1
+        
+        # Merge Log Verbosity (remains last in this frame)
         lbl_merge_verbosity = tk.Label(merge_opts_frame, text="Merge Log Verbosity:")
         lbl_merge_verbosity.grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
         self.combo_merge_verbosity = ttk.Combobox(
             merge_opts_frame, 
             textvariable=self.merge_script_gui_silence_level_var, 
             values=gui_verbosity_options, 
-            width=25, # Adjust width if needed for longer strings
+            width=25, 
             state="readonly"
         )
         self.combo_merge_verbosity.grid(row=row_idx, column=1, padx=(0,2), pady=2, sticky="w")
-        self.combo_merge_verbosity.bind("<<ComboboxSelected>>", self._update_gui_verbosity_from_combobox) # Bind event
+        self.combo_merge_verbosity.bind("<<ComboboxSelected>>", self._update_gui_verbosity_from_combobox)
         hl_mlv = self._add_manual_help_icon(merge_opts_frame, "merge_log_verbosity", row_idx, 2, sticky="w", padx=(0,5))
         self.merge_related_widgets_references.append((lbl_merge_verbosity, self.combo_merge_verbosity, hl_mlv))
         self.widgets_to_disable_during_processing.extend([lbl_merge_verbosity, self.combo_merge_verbosity, hl_mlv]); row_idx += 1
@@ -1062,6 +1123,7 @@ class DepthCrafterGUI:
         self.log.config(yscrollcommand=log_scroll.set)
         log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.log.pack(side=tk.LEFT, fill="both", expand=True)
+        self.toggle_merge_related_options_active_state()
 
     def _clear_log(self):
         if messagebox.askyesno("Clear Log", "Are you sure you want to clear the log?"):
@@ -1181,9 +1243,73 @@ class DepthCrafterGUI:
         entry.grid(row=row, column=1, padx=5, pady=2, sticky="w")
         return entry
 
-    def browse_input(self): # Unchanged
-        folder = filedialog.askdirectory(initialdir=self.input_dir.get())
-        if folder: self.input_dir.set(os.path.normpath(folder))
+    def browse_input_folder(self): # Renamed from browse_input
+        folder = filedialog.askdirectory(initialdir=self.input_dir_or_file_var.get())
+        if folder:
+            self.input_dir_or_file_var.set(os.path.normpath(folder))
+            self.single_file_mode_active = False
+            # Heuristic to check if selected folder is an image sequence itself
+            if self._is_image_sequence_folder(folder):
+                self.current_input_mode = "image_sequence_folder"
+                global_log_message("GUI_INPUT_MODE_SET_IMG_SEQ_FOLDER", path=folder)
+            else:
+                self.current_input_mode = "batch_folder"
+                global_log_message("GUI_INPUT_MODE_SET_BATCH_FOLDER", path=folder)
+            # Make sure output dir is not inside input dir if it's a general batch folder
+            # (This is advanced validation, can be added later)
+
+    def browse_single_input_file(self): # New method
+        filetypes = [("All Supported", "*.mp4 *.avi *.mov *.mkv *.webm *.flv *.gif *.png *.jpg *.jpeg *.bmp *.tiff *.exr"),
+                     ("Video files", "*.mp4 *.avi *.mov *.mkv *.webm *.flv *.gif"),
+                     ("Image files", "*.png *.jpg *.jpeg *.bmp *.tiff *.exr")]
+        
+        initial_dir_guess = self.input_dir_or_file_var.get()
+        if os.path.isfile(initial_dir_guess): initial_dir_guess = os.path.dirname(initial_dir_guess)
+        if not os.path.isdir(initial_dir_guess): initial_dir_guess = os.path.expanduser("~")
+
+
+        filepath = filedialog.askopenfilename(initialdir=initial_dir_guess, filetypes=filetypes)
+        if filepath:
+            self.input_dir_or_file_var.set(os.path.normpath(filepath))
+            self.single_file_mode_active = True
+            ext = os.path.splitext(filepath)[1].lower()
+            is_video = any(ext in vid_ext.replace("*", "") for vid_ext in self.VIDEO_EXTENSIONS)
+            is_image = any(ext in img_ext.replace("*", "") for img_ext in self.IMAGE_EXTENSIONS)
+
+            if is_video:
+                self.current_input_mode = "single_video_file"
+                global_log_message("GUI_INPUT_MODE_SET_SINGLE_VIDEO", path=filepath)
+            elif is_image:
+                self.current_input_mode = "single_image_file"
+                global_log_message("GUI_INPUT_MODE_SET_SINGLE_IMAGE", path=filepath)
+            else:
+                global_log_message("GUI_INPUT_MODE_UNKNOWN_SINGLE_FILE_WARN", path=filepath)
+                # Default to treating as video, or show error
+                self.current_input_mode = "single_video_file" 
+                messagebox.showwarning("Unknown File Type", f"Could not determine if '{os.path.basename(filepath)}' is a video or image. Assuming video.")
+
+    def _is_image_sequence_folder(self, folder_path: str) -> bool:
+        """Rudimentary check if a folder looks like an image sequence."""
+        if not os.path.isdir(folder_path): return False
+        
+        image_files_count = 0
+        video_files_count = 0
+        sub_dirs_count = 0
+
+        for item in os.listdir(folder_path):
+            item_path = os.path.join(folder_path, item)
+            if os.path.isdir(item_path):
+                sub_dirs_count += 1
+                continue # Don't check sub-sub-dirs for this simple heuristic
+            
+            ext = os.path.splitext(item)[1].lower()
+            if any(ext in img_ext.replace("*", "") for img_ext in self.IMAGE_EXTENSIONS):
+                image_files_count +=1
+            elif any(ext in vid_ext.replace("*", "") for vid_ext in self.VIDEO_EXTENSIONS):
+                video_files_count +=1
+        
+        # Heuristic: many images, no videos, no sub-directories
+        return image_files_count > 5 and video_files_count == 0 and sub_dirs_count == 0
 
     def browse_output(self): # Unchanged
         folder = filedialog.askdirectory(initialdir=self.output_dir.get())
@@ -1232,73 +1358,173 @@ class DepthCrafterGUI:
 
     def start_thread(self):
         if self.processing_thread and self.processing_thread.is_alive():
-            global_log_message("GUI_PROCESSING_ALREADY_RUNNING_WARN") # New ID
+            global_log_message("GUI_PROCESSING_ALREADY_RUNNING_WARN")
             return
-        input_files = []
-        for ext in ["*.mp4", "*.avi", "*.mov", "*.mkv", "*.webm", "*.flv", "*.gif"]:
-            input_files.extend(glob.glob(os.path.join(self.input_dir.get(), ext)))
-            input_files.extend(glob.glob(os.path.join(self.input_dir.get(), ext.upper())))
+
+        input_path_str = self.input_dir_or_file_var.get()
+        if not input_path_str or not os.path.exists(input_path_str):
+            global_log_message("GUI_INPUT_PATH_EMPTY_ERROR")
+            messagebox.showerror("Error", f"Input path does not exist: {input_path_str}")
+            return
         
-        unique_paths = sorted(list(set(input_files)))
-        if not unique_paths:
-            global_log_message("GUI_NO_VIDEOS_FOUND") # Use existing ID
+        # === Add path analysis here ===
+        # Re-determine mode based on the current text in the input field
+        # This makes it robust to typed paths or loaded configs where browse buttons weren't the last action.
+        determined_mode, determined_single_source = self._determine_input_mode_from_path(input_path_str)
+        
+        # Update the GUI's state based on this fresh determination
+        self.current_input_mode = determined_mode
+        self.single_file_mode_active = determined_single_source
+        # === End of added path analysis ===
+
+
+        if not os.path.exists(input_path_str): # Check existence *after* trying to determine mode (as _determine... also checks)
+            global_log_message("GUI_INPUT_PATH_INVALID_ERROR", path=input_path_str)
+            messagebox.showerror("Error", f"Input path does not exist: {input_path_str}")
+            return
+
+        sources_to_process_specs = [] # List of dicts: {"path": str, "type": str, "basename": str}
+
+        if self.single_file_mode_active: # Now this flag is reliably set
+            self.effective_move_original_on_completion = False
+            basename = ""
+            # For image_sequence_folder, basename is folder name. For files, it's filename without ext.
+            if self.current_input_mode == "image_sequence_folder":
+                basename = os.path.basename(input_path_str)
+            else: # single_video_file or single_image_file
+                basename = os.path.splitext(os.path.basename(input_path_str))[0]
+            
+            sources_to_process_specs.append({
+                "path": input_path_str,
+                "type": self.current_input_mode, 
+                "basename": basename
+            })
+        else: # Batch folder mode (self.current_input_mode will be "batch_folder")
+            self.effective_move_original_on_completion = self.MOVE_ORIGINAL_TO_FINISHED_FOLDER_ON_COMPLETION
+            if self.current_input_mode == "batch_folder": # Explicit check
+                # Scan the batch folder for videos and image sequence subfolders
+                try:
+                    for item_name in os.listdir(input_path_str):
+                        item_full_path = os.path.join(input_path_str, item_name)
+                        # ... (rest of the batch folder scanning logic from previous version)
+                        if os.path.isfile(item_full_path):
+                            ext = os.path.splitext(item_name)[1].lower()
+                            if any(ext in vid_ext.replace("*", "") for vid_ext in self.VIDEO_EXTENSIONS):
+                                basename = os.path.splitext(item_name)[0]
+                                sources_to_process_specs.append({
+                                    "path": item_full_path,
+                                    "type": "video_file", # When found in batch, it's a standard video_file
+                                    "basename": basename
+                                })
+                        elif os.path.isdir(item_full_path):
+                            if self._is_image_sequence_folder(item_full_path):
+                                basename = item_name 
+                                sources_to_process_specs.append({
+                                    "path": item_full_path,
+                                    "type": "image_sequence_folder",
+                                    "basename": basename
+                                })
+                except NotADirectoryError: # Should be caught by _determine_input_mode_from_path if path was invalid
+                    global_log_message("GUI_INPUT_PATH_NOT_DIR_FOR_BATCH_ERROR", path=input_path_str)
+                    messagebox.showerror("Error", f"Input path is not a directory for batch processing: {input_path_str}")
+                    return
+                except OSError as e: # Catch other potential OS errors from listdir
+                    global_log_message("GUI_LISTDIR_OS_ERROR", path=input_path_str, error=str(e))
+                    messagebox.showerror("Error", f"Could not read directory contents for '{input_path_str}':\n{e}")
+                    return
+            else: # Should not happen if _determine_input_mode_from_path is correct
+                global_log_message("GUI_START_THREAD_UNEXPECTED_MODE_AFTER_DETERMINATION", mode=self.current_input_mode, path=input_path_str)
+                messagebox.showerror("Internal Error", f"Unexpected input mode '{self.current_input_mode}' for path '{input_path_str}'. Please report this.")
+                return
+
+
+        if not sources_to_process_specs:
+            global_log_message("GUI_NO_VALID_SOURCES_FOUND", path_scanned=input_path_str, mode=self.current_input_mode)
             return
         
         final_jobs_to_process = []
         base_job_info_map_for_run = {} 
 
-        fps_setting, len_setting = self.target_fps.get(), self.process_length.get()
-        win_setting, ov_setting = self.window_size.get(), self.overlap.get()
+        gui_fps_setting = self.target_fps.get()
+        gui_len_setting = self.process_length.get()
+        gui_win_setting = self.window_size.get()
+        gui_ov_setting = self.overlap.get()
 
-        for vid_path in unique_paths:
-            base_name = os.path.splitext(os.path.basename(vid_path))[0]
-            # define_video_segments now uses global_log_message
+        for source_spec in sources_to_process_specs:
+            source_path = source_spec["path"]
+            current_gui_mode = source_spec["type"] 
+            base_name = source_spec["basename"]
+
+            source_type_for_define = ""
+            # ... (mapping current_gui_mode to source_type_for_define) ...
+            if current_gui_mode == "single_video_file" or current_gui_mode == "video_file":
+                source_type_for_define = "video_file"
+            elif current_gui_mode == "image_sequence_folder":
+                source_type_for_define = "image_sequence_folder"
+            elif current_gui_mode == "single_image_file":
+                source_type_for_define = "single_image_file"
+            # ...
+
+            # num_frames_for_single_img_param = -1 # Default for define_video_segments
+            # if source_type_for_define == "single_image_file":
+            #     num_frames_for_single_img_param = DepthCrafterGUI.DEFAULT_SINGLE_IMAGE_FRAME_COUNT # Use the class attribute
+
             all_potential_segments_for_video, base_job_info_initial = define_video_segments(
-                vid_path, base_name, fps_setting, len_setting, win_setting, ov_setting #, self.log_message removed
+                video_path_or_folder=source_path,
+                original_basename=base_name,
+                gui_target_fps_setting=gui_fps_setting,
+                gui_process_length_overall=gui_len_setting,
+                gui_segment_output_window_frames=gui_win_setting,
+                gui_segment_output_overlap_frames=gui_ov_setting,
+                source_type=source_type_for_define, # The mapped type for define_video_segments internal logic
             )
 
             if not base_job_info_initial:
-                global_log_message("PROCESSING_SKIPPED", item_name=base_name, reason="Issues in segment definition (e.g., video read error).")
+                global_log_message("PROCESSING_SKIPPED", item_name=base_name, reason="Issues in segment definition (metadata error).")
                 continue
             
-            base_job_info_map_for_run[vid_path] = base_job_info_initial.copy()
+            base_job_info_map_for_run[source_path] = base_job_info_initial.copy() # Keyed by actual source path
 
             if self.process_as_segments_var.get():
                 if not all_potential_segments_for_video:
-                    reason_skip = "Too short or invalid overlap" if base_job_info_initial.get("original_video_raw_frame_count", 0) > 0 else "Video issue or zero frames"
-                    global_log_message("GUI_NO_SEGMENTS_DEFINED_SKIP", basename=base_name, reason=reason_skip) # New ID
+                    reason_skip = "Too short or invalid overlap/settings" if base_job_info_initial.get("original_video_raw_frame_count", 0) > 0 else "Source issue or zero frames/duration"
+                    global_log_message("GUI_NO_SEGMENTS_DEFINED_SKIP", basename=base_name, reason=reason_skip)
                     continue
 
                 segment_subfolder_name = get_segment_output_folder_name(base_name)
                 segment_subfolder_path = os.path.join(self.output_dir.get(), segment_subfolder_name)
-                current_video_base_info_ref = base_job_info_map_for_run[vid_path]
+                current_video_base_info_ref = base_job_info_map_for_run[source_path]
+                
                 segments_for_this_video, action_taken = self._get_segments_to_resume_or_overwrite(
-                    vid_path, base_name, segment_subfolder_path, all_potential_segments_for_video,
-                    current_video_base_info_ref
+                    source_path, base_name, segment_subfolder_path, all_potential_segments_for_video,
+                    current_video_base_info_ref # This ref will be updated with pre_existing_successful_jobs
                 )
-                global_log_message("GUI_RESUME_ACTION", video_name=base_name, action_taken=action_taken, num_segments=len(segments_for_this_video)) # Use existing
+                global_log_message("GUI_RESUME_ACTION", video_name=base_name, action_taken=action_taken, num_segments=len(segments_for_this_video))
                 if segments_for_this_video:
-                    final_jobs_to_process.extend(segments_for_this_video)
+                    final_jobs_to_process.extend(segments_for_this_video) # these jobs now contain full base_job_info
             
-            else: # Full video processing
-                full_vid_out_check = os.path.join(self.output_dir.get(), get_full_video_output_filename(base_name, "mp4")) 
+            else: # Full "video" processing (could be actual video, sequence, or single image made into clip)
+                # Output path check for full processing
+                # The actual extension depends on the source. For now, assume mp4 for this check.
+                # get_full_video_output_filename is generic.
+                full_out_check_path = os.path.join(self.output_dir.get(), get_full_video_output_filename(base_name, "mp4"))
                 proceed_full = True
-                if os.path.exists(full_vid_out_check):
-                    if not messagebox.askyesno("Overwrite?", f"An output file for '{base_name}' (e.g., MP4) might exist:\n{full_vid_out_check}\n\nOverwrite if it exists?"):
-                        global_log_message("GUI_FULL_VIDEO_SKIP_NO_OVERWRITE", basename=base_name) # New ID
+                if os.path.exists(full_out_check_path): # Simplified check, might need to be smarter based on source type
+                    if not messagebox.askyesno("Overwrite?", f"An output file for '{base_name}' might exist (e.g., MP4):\n{full_out_check_path}\n\nOverwrite if it exists?"):
+                        global_log_message("GUI_FULL_VIDEO_SKIP_NO_OVERWRITE", basename=base_name)
                         proceed_full = False
                 
                 if proceed_full:
-                    raw_frames = base_job_info_initial.get("original_video_raw_frame_count", 0)
-                    orig_fps = base_job_info_initial.get("original_video_fps", 30.0)
-                    full_video_job = {
-                        "video_path": vid_path, "original_basename": base_name,
-                        "original_video_raw_frame_count": raw_frames, "original_video_fps": orig_fps,
+                    # Construct a single job representing the "full" processing of the source
+                    # This job needs all info from base_job_info_initial
+                    full_source_job = {
+                        **base_job_info_initial, # Contains path, type, basename, fps, frame_count, gui_fps_setting
                         "is_segment": False,
-                        "gui_desired_output_window_frames": win_setting, 
-                        "gui_desired_output_overlap_frames": ov_setting 
+                        # These GUI settings are for reference if needed by backend, though backend uses its own params for full run
+                        "gui_desired_output_window_frames": gui_win_setting, 
+                        "gui_desired_output_overlap_frames": gui_ov_setting 
                     }
-                    final_jobs_to_process.append(full_video_job)
+                    final_jobs_to_process.append(full_source_job)
 
         if final_jobs_to_process:
             self._set_ui_processing_state(True)
@@ -1307,7 +1533,7 @@ class DepthCrafterGUI:
                                                       daemon=True)
             self.processing_thread.start()
         else:
-            global_log_message("GUI_NO_JOBS_TO_PROCESS_FINAL_INFO") # New ID
+            global_log_message("GUI_NO_JOBS_TO_PROCESS_FINAL_INFO")
 
     def _start_processing_wrapper(self, video_processing_jobs, base_job_info_map):
         try: 
@@ -1315,13 +1541,63 @@ class DepthCrafterGUI:
         finally: 
             self.message_queue.put(("set_ui_state", False)) 
 
+    def _determine_input_mode_from_path(self, path_str: str) -> Tuple[str, bool]:
+        """
+        Analyzes a path string and determines the input mode and if it's a single source.
+        Returns: (input_mode_str, is_single_source_bool)
+        """
+        if not path_str or not os.path.exists(path_str):
+            global_log_message("GUI_INPUT_PATH_INVALID_FOR_MODE_DETECT", path=path_str)
+            return "batch_folder", False # Default to batch if path is invalid
+
+        is_single_source = False
+        mode = "batch_folder" # Default
+
+        if os.path.isfile(path_str):
+            is_single_source = True
+            ext = os.path.splitext(path_str)[1].lower()
+            is_video = any(ext in vid_ext.replace("*", "") for vid_ext in self.VIDEO_EXTENSIONS)
+            is_image = any(ext in img_ext.replace("*", "") for img_ext in self.IMAGE_EXTENSIONS)
+
+            if is_video:
+                mode = "single_video_file"
+            elif is_image:
+                mode = "single_image_file"
+            else:
+                # Unknown file type, treat as if it's a folder or log error
+                global_log_message("GUI_INPUT_MODE_UNKNOWN_TYPED_FILE_WARN", path=path_str)
+                mode = "batch_folder" # Fallback to prevent error, or could be an error state
+                is_single_source = False # Revert, as we can't process it as a single known file
+        elif os.path.isdir(path_str):
+            # If it's a directory, it could be a batch folder or an image sequence folder.
+            # The _is_image_sequence_folder heuristic is used.
+            if self._is_image_sequence_folder(path_str):
+                mode = "image_sequence_folder"
+                is_single_source = True # An image sequence folder is treated as a single processing unit
+            else:
+                mode = "batch_folder"
+                is_single_source = False
+        else:
+            # Path exists but is not a file or directory (e.g., symlink to nowhere, etc.)
+            global_log_message("GUI_INPUT_PATH_NOT_FILE_OR_DIR_WARN", path=path_str)
+            mode = "batch_folder" # Default/fallback
+            is_single_source = False
+            
+        global_log_message("GUI_INPUT_MODE_DETERMINED", path=path_str, mode=mode, is_single=is_single_source)
+        return mode, is_single_source
+
     def save_config(self):
-        config = self._collect_all_settings()
+        config = self._collect_all_settings() # This should now get input_dir_or_file_var
         config[self.LAST_SETTINGS_DIR_CONFIG_KEY] = self.last_settings_dir
+        
+        # Add current_input_mode and single_file_mode_active to be saved
+        config["current_input_mode"] = self.current_input_mode 
+        config["single_file_mode_active"] = self.single_file_mode_active
+        
         try:
             with open(self.CONFIG_FILENAME, "w") as f: json.dump(config, f, indent=4)
+            # No need to log here, GUI might be closing
         except Exception as e: 
-            # Log to console, GUI logger might not be reliable during shutdown
             print(f"Warning (GUI save_config): Could not save config: {e}")
 
     def load_config(self):
@@ -1333,15 +1609,28 @@ class DepthCrafterGUI:
                     if key in self.all_tk_vars:
                         try: self.all_tk_vars[key].set(value)
                         except tk.TclError: 
-                            # Log to console, GUI logger might not be set up yet
                             print(f"Warning (GUI load_config): Could not set var {key} during early config load.")
+                
                 self.last_settings_dir = config.get(self.LAST_SETTINGS_DIR_CONFIG_KEY, os.getcwd())
+                
+                # Load current_input_mode and single_file_mode_active
+                self.current_input_mode = config.get("current_input_mode", "batch_folder") # Default if not found
+                self.single_file_mode_active = config.get("single_file_mode_active", False) # Default if not found
+                
                 # Update GUI verbosity from loaded config if applicable
                 set_gui_verbosity(self._get_mapped_gui_verbosity_level())
+                global_log_message("GUI_CONFIG_LOADED_INFO", filename=self.CONFIG_FILENAME) # Log after successful load
             except Exception as e:
                 print(f"Warning (GUI load_config): Could not load config '{self.CONFIG_FILENAME}': {e}")
+                # Set defaults if loading fails for these crucial state vars
                 self.last_settings_dir = os.getcwd()
-        else: self.last_settings_dir = os.getcwd()
+                self.current_input_mode = "batch_folder"
+                self.single_file_mode_active = False
+        else: 
+            self.last_settings_dir = os.getcwd()
+            self.current_input_mode = "batch_folder" # Set defaults if no config file
+            self.single_file_mode_active = False
+            global_log_message("GUI_CONFIG_NOT_FOUND_INFO", filename=self.CONFIG_FILENAME)
 
     def on_close(self):
         self.save_config()
@@ -1360,44 +1649,66 @@ class DepthCrafterGUI:
             messagebox.showerror("Error", "Merge module not available."); return
         meta_file = filedialog.askopenfilename(title="Select Master Metadata JSON for Re-Merging", filetypes=[("JSON files", "*.json"), ("All files", "*.*")], initialdir=self.output_dir.get())
         if not meta_file: return
-        base_name = os.path.splitext(os.path.basename(meta_file))[0].replace("_master_meta", "")
-        remerge_base_name = f"{base_name}_remerged_depth"
+        
+        base_name_from_meta = os.path.splitext(os.path.basename(meta_file))[0].replace("_master_meta", "")
+        output_suffix = self.merge_output_suffix_var.get() # Get suffix
+        remerge_base_name = f"{base_name_from_meta}{output_suffix}" # Use suffix for base name
+
         out_fmt = self.merge_output_format_var.get()
-        # ... (file dialog logic unchanged) ...
-        def_ext = f".{out_fmt}" if out_fmt not in ["png_sequence", "exr_sequence"] else ""
-        ftypes_map = {"mp4": [("MP4", "*.mp4")], "png_sequence": [("PNG Seq (Select Folder)", "")], "exr_sequence": [("EXR Seq (Select Folder)", "")], "exr": [("EXR File", "*.exr")]}
+        
+        def_ext_fmt = out_fmt
+        if out_fmt == "main10_mp4": # Covers "main10_mp4"
+            def_ext_fmt = "mp4"
+        elif out_fmt in ["png_sequence", "exr_sequence"]:
+            def_ext_fmt = "" # No extension for sequence folders
+        elif out_fmt == "exr":
+            def_ext_fmt = "exr"
+
+        def_ext = f".{def_ext_fmt}" if def_ext_fmt else ""
+
+        ftypes_map = {
+            "mp4": [("MP4 (H.264 8-bit)", "*.mp4")],
+            "main10_mp4": [("MP4 (HEVC 10-bit)", "*.mp4")], # New entry
+            "png_sequence": [("PNG Seq (Select Folder)", "")],
+            "exr_sequence": [("EXR Seq (Select Folder)", "")],
+            "exr": [("EXR File", "*.exr")]
+        }
         curr_ftypes = ftypes_map.get(out_fmt, []) + [("All files", "*.*")]
         out_path = None
+
         if "sequence" in out_fmt:
             parent_dir = filedialog.askdirectory(title=f"Select Parent Dir for Re-Merged {out_fmt.upper()} Sequence...", initialdir=self.output_dir.get())
-            if parent_dir: out_path = parent_dir
+            if parent_dir: out_path = parent_dir # merge_depth_segments will create subfolder using remerge_base_name
         else:
-            out_path = filedialog.asksaveasfilename(title=f"Save Re-Merged {out_fmt.upper()} As...", initialdir=self.output_dir.get(), initialfile=f"{remerge_base_name}{def_ext}", defaultextension=def_ext, filetypes=curr_ftypes)
+            # Construct the initial filename based on YOUR variables
+            initial_filename_for_dialog_actual = f"{remerge_base_name}{def_ext}"
+
+            out_path = filedialog.asksaveasfilename(
+                title=f"Save Re-Merged {out_fmt.upper()} As...", 
+                initialdir=self.output_dir.get(), 
+                initialfile=f"{remerge_base_name}{def_ext}", # Filename includes suffix
+                defaultextension=def_ext, 
+                filetypes=curr_ftypes
+            )
 
         if not out_path: 
-            global_log_message("GUI_REMERGE_CANCELLED_NO_PATH") # New ID
-            return
+            global_log_message("GUI_REMERGE_CANCELLED_NO_PATH"); return
+            
         align_method = "linear_blend" if self.merge_alignment_method_var.get() == "Linear Blend" else "shift_scale"
+        
         args = {"master_meta_path": meta_file, "output_path_arg": out_path,
                 "do_dithering": self.merge_dither_var.get(), "dither_strength_factor": self.merge_dither_strength_var.get(),
                 "apply_gamma_correction": self.merge_gamma_correct_var.get(), "gamma_value": self.merge_gamma_value_var.get(),
                 "use_percentile_norm": self.merge_percentile_norm_var.get(), "norm_low_percentile": self.merge_norm_low_perc_var.get(),
                 "norm_high_percentile": self.merge_norm_high_perc_var.get(), "output_format": out_fmt,
                 "merge_alignment_method": align_method,
-                # script_caller_silence_level removed
-                "output_filename_override_base": remerge_base_name}
+                "output_filename_override_base": remerge_base_name} # Pass the suffixed base name
+
         if self.processing_thread and self.processing_thread.is_alive():
             messagebox.showwarning("Busy", "Another process is running. Please wait."); return
         
         global_log_message("GUI_ACTION_STARTED", action_name="Re-Merge", target_name=os.path.basename(meta_file))
         self._set_ui_processing_state(True)
-        # Set console verbosity for merge_depth_segments when called from GUI thread
-        # This ensures its direct prints (if any remain or from dependencies) respect a setting
-        # Note: its own log_message calls will use the GUI callback if set by message_catalog
-        # For merge_depth_segments, we want its log_message to go to GUI, so GUI verbosity applies.
-        # Console verbosity can be set to silent if we only want output via GUI log.
-        # set_console_verbosity(VERBOSITY_LEVEL_SILENT) # Option: Silence direct console output from merge script
-
         self.processing_thread = threading.Thread(target=self._execute_re_merge_wrapper, args=(args,), daemon=True); self.processing_thread.start()
 
     def _execute_re_merge_wrapper(self, remerge_args_dict):
@@ -1449,14 +1760,13 @@ class DepthCrafterGUI:
         master_path = gen_visual_args_dict["master_meta_path"]
         vis_fmt = gen_visual_args_dict["visual_format_to_generate"]
         start_time = time.perf_counter()
-        # Logged by caller: GUI_ACTION_STARTED
         
-        meta_data = load_json_file(master_path) # Util logs
-        if not meta_data: return # Error logged by load_json_file
+        meta_data = load_json_file(master_path) 
+        if not meta_data: return 
         
         jobs = [j for j in meta_data.get("jobs_info", []) if j.get("status") == "success" and j.get("output_segment_filename")]
         if not jobs: 
-            global_log_message("GUI_GEN_VISUALS_NO_SUCCESSFUL_SEGS", master_file=os.path.basename(master_path)) # New ID
+            global_log_message("GUI_GEN_VISUALS_NO_SUCCESSFUL_SEGS", master_file=os.path.basename(master_path)) 
             return
         self.progress["maximum"] = len(jobs)
         seg_folder_path = os.path.dirname(master_path)
@@ -1464,12 +1774,12 @@ class DepthCrafterGUI:
 
         for i, job_meta in enumerate(jobs):
             if self.stop_event.is_set(): 
-                global_log_message("GUI_GEN_VISUALS_CANCELLED_MID_PROCESS") # New ID
+                global_log_message("GUI_GEN_VISUALS_CANCELLED_MID_PROCESS") 
                 break
             seg_id, npz_name = job_meta.get("segment_id"), job_meta.get("output_segment_filename")
             npz_path = os.path.join(seg_folder_path, npz_name)
             global_log_message("GUI_GEN_VISUALS_PROCESSING_SEGMENT", segment_id=seg_id + 1 if seg_id is not None else '?', 
-                               total_segments=len(jobs), npz_name=npz_name, format=vis_fmt) # New ID
+                               total_segments=len(jobs), npz_name=npz_name, format=vis_fmt) 
             
             if not os.path.exists(npz_path): 
                 global_log_message("FILE_NOT_FOUND", filepath=npz_path)
@@ -1481,7 +1791,7 @@ class DepthCrafterGUI:
                         continue
                     raw_frames = data['frames']
                 if raw_frames.size == 0: 
-                    global_log_message("GUI_GEN_VISUALS_SEGMENT_EMPTY_WARN", npz_name=npz_name) # New ID
+                    global_log_message("GUI_GEN_VISUALS_SEGMENT_EMPTY_WARN", npz_name=npz_name) 
                     continue
                 
                 norm_frames = (raw_frames - raw_frames.min()) / (raw_frames.max() - raw_frames.min()) if raw_frames.max() != raw_frames.min() else np.zeros_like(raw_frames)
@@ -1491,9 +1801,14 @@ class DepthCrafterGUI:
                 fps = float(job_meta.get("processed_at_fps", meta_data.get("original_video_details", {}).get("original_fps", 30.0)))
                 if fps <= 0: fps = 30.0
 
-                # Calls to save_depth_visual_as_*_util will use global_log_message internally for their errors
-                if vis_fmt == "mp4":
-                    save_path, save_err = save_depth_visual_as_mp4_util(norm_frames, os.path.join(seg_folder_path, f"{base_name_no_ext}_visual.mp4"), fps)
+                if vis_fmt == "mp4" or vis_fmt == "main10_mp4": # Modified to handle main10_mp4
+                    # Pass vis_fmt as output_format to the util
+                    save_path, save_err = save_depth_visual_as_mp4_util(
+                        norm_frames, 
+                        os.path.join(seg_folder_path, f"{base_name_no_ext}_visual.mp4"), # Filename extension is still .mp4
+                        fps,
+                        output_format=vis_fmt # Pass "mp4" or "main10_mp4"
+                    )
                 elif vis_fmt == "png_sequence":
                     save_path, save_err = save_depth_visual_as_png_sequence_util(norm_frames, seg_folder_path, base_name_no_ext)
                 elif vis_fmt == "exr_sequence":
@@ -1507,12 +1822,12 @@ class DepthCrafterGUI:
                     else: save_err = "OpenEXR module not available in GUI environment."
 
                 if save_path:
-                    global_log_message("GUI_GEN_VISUALS_SAVE_SUCCESS", path=save_path) # New ID
+                    global_log_message("GUI_GEN_VISUALS_SAVE_SUCCESS", path=save_path) 
                     if seg_id is not None: updated_visual_paths[seg_id] = {"path": os.path.abspath(save_path), "format": vis_fmt}
                 if save_err: 
-                    global_log_message("GUI_GEN_VISUALS_SAVE_ERROR", npz_name=npz_name, error=save_err) # New ID
+                    global_log_message("GUI_GEN_VISUALS_SAVE_ERROR", npz_name=npz_name, error=save_err, format_requested=vis_fmt) 
             except Exception as e:
-                global_log_message("GUI_GEN_VISUALS_SEGMENT_PROCESSING_ERROR", npz_name=npz_name, error=str(e), traceback_info=sys.exc_info()) # New ID
+                global_log_message("GUI_GEN_VISUALS_SEGMENT_PROCESSING_ERROR", npz_name=npz_name, error=str(e), traceback_info=sys.exc_info()) 
             self.message_queue.put(("progress", i + 1))
         
         if updated_visual_paths:
