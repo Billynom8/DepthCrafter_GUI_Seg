@@ -159,7 +159,7 @@ if %errorlevel% neq 0 (
 ) else (
     REM Install specific PyTorch with CUDA 12.8
     echo Installing PyTorch with CUDA 12.8... >> install_log.txt
-    python -m pip install -U torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+    python -m pip install -U torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 --index-url https://download.pytorch.org/whl/cu128
     if %errorlevel% neq 0 (
         echo Failed to install PyTorch packages. >> install_log.txt
         echo Failed to install PyTorch packages.
