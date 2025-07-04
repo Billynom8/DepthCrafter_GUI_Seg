@@ -1025,6 +1025,18 @@ MESSAGES = {
         "level": DETAIL,
         "template": "Successfully moved original source '{filename}' to '{destination_folder}' folder." # Example update
     },
+    "GUI_MOVE_UNKNOWN_STATUS_WARN": {
+        "level": WARNING,
+        "template": "Move Original: Could not determine 'finished' or 'failed' status for '{basename}' (status: '{status}'). Original file will not be moved."
+    },
+    "GUI_ORIGINAL_SOURCE_MOVE_ATTEMPT": {
+        "level": INFO, # Renamed from GUI_ORIGINAL_VIDEO_MOVE_ATTEMPT
+        "template": "Attempting to move original source '{basename}' to '{target_folder}' folder."
+    },
+    "GUI_ORIGINAL_SOURCE_MOVE_SUCCESS": {
+        "level": INFO, # Renamed from GUI_ORIGINAL_VIDEO_MOVE_SUCCESS
+        "template": "Successfully moved original source '{filename}' to '{destination_folder}' folder."
+    },
 
     # Resume logic messages
     "GUI_RESUME_REPROCESS_FAILED_MASTER_START": { "template": "Attempting to re-process failed segments for {basename} based on existing master metadata.", "level": INFO },
@@ -1104,6 +1116,11 @@ MESSAGES = {
     "GUI_RESUME_ACTION": {"template": "For video '{video_name}': Action '{action_taken}', {num_segments} segments will be processed.", "level": DETAIL},
     "GUI_PRESERVING_SUCCESSFUL_SEGMENTS": {"template": "Found {num_complete} successfully completed segments for {video_name} that will be skipped during processing.", "level": INFO},
     "GUI_BACKED_UP_FILE": {"template": "Backed up existing file {original_path} to: {backup_path}", "level": DETAIL},
+    "GUI_ORIGINAL_SOURCE_MOVE_INVALID_INPUT_ROOT_WARN": { "level": WARNING, "template": "Move Original: The GUI input path '{gui_input_path}' is invalid for determining the target folder root. Using dirname of processed item as fallback." },
+    "GUI_ORIGINAL_SOURCE_MOVE_CANNOT_DETERMINE_ROOT": { "level": ERROR, "template": "Move Original: Cannot determine a valid root directory for target folder based on input path '{path}'." },
+    "GUI_ORIGINAL_SOURCE_MOVE_SOURCE_NOT_FOUND": { "level": WARNING, "template": "Move Original: Source path to move does not exist: {path}" },
+    "GUI_ORIGINAL_SOURCE_MOVE_RENAMED": { "level": INFO, "template": "Move Original: Destination already exists. Renaming '{old_name}' to '{new_name}'." },
+    "GUI_ORIGINAL_SOURCE_MOVE_ERROR": { "level": ERROR, "template": "ERROR moving original source '{basename}': {error}", "traceback": True },
 
 
     # Utilities
