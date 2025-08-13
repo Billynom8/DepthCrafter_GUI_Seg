@@ -80,7 +80,7 @@ This GUI aims to make DepthCrafter more accessible and efficient for users deali
 
 > ⚠️ **Do not run the installer from inside the cloned repository.**  
 > The installer itself is responsible for cloning the repository correctly.
-
+[more](https://github.com/Billynom8/DepthCrafter_GUI_Seg/blob/main/1-click-install/READ_BEFORE_CLONING.md)
 ---
 
 ## 🔆 Introduction
