@@ -74,6 +74,15 @@ This GUI aims to make DepthCrafter more accessible and efficient for users deali
 [GUI based on enoky/DepthCrafter](https://github.com/enoky/DepthCrafter)
 [Main code contributer Gemini 2.5](https://aistudio.google.com/)
 
+---
+
+# 📦 DepthCrafter_GUI_Seg Installer
+
+> ⚠️ **Do not run the installer from inside the cloned repository.**  
+> The installer itself is responsible for cloning the repository correctly.
+
+---
+
 ## 🔆 Introduction
 🤗 If you find DepthCrafter useful, **please help ⭐ this repo**, which is important to Open-Source projects. Thanks!
 
