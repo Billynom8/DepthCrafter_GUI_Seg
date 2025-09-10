@@ -23,7 +23,7 @@ from message_catalog import (
     VERBOSITY_LEVEL_SILENT
 )
 # Import the backend logic class
-from depth_crafter_logic import DepthCrafterDemo
+from depthcrafter_logic import DepthCrafterDemo
 
 from depthcrafter.utils import (
     format_duration,
