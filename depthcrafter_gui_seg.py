@@ -4,39 +4,32 @@ import os
 import sys
 import glob
 import shutil
-import json # Keep for config.json, help_content.json, settings.json
+import json
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-import queue
-import time # Keep for time.perf_counter, time.strftime
+import queue # Still needed for progress updates
+import time
 import numpy as np
 import torch
-import message_catalog
-# Import from the new message catalog
-from message_catalog import (
-    log_message as global_log_message, # Rename to avoid clash with class method if any
-    set_gui_logger_callback,
-    set_gui_verbosity,
-    configure_timestamps as mc_configure_timestamps,
-    INFO, DEBUG, WARNING, ERROR, CRITICAL, # Severity levels
-    VERBOSITY_LEVEL_INFO, VERBOSITY_LEVEL_DEBUG, VERBOSITY_LEVEL_WARNING, # Verbosity levels
-    VERBOSITY_LEVEL_SILENT
-)
+import logging # Import standard logging
+
+# Configure a logger for this module
+_logger = logging.getLogger(__name__)
+
 # Import the backend logic class
-from depthcrafter_logic import DepthCrafterDemo
+from depthcrafter.depthcrafter_logic import DepthCrafterDemo
 
 from depthcrafter.utils import (
     format_duration,
-    # get_formatted_timestamp, # GUI will use message_catalog's or its own queue timestamping
     get_segment_output_folder_name,
     get_segment_npz_output_filename,
     get_full_video_output_filename,
     get_sidecar_json_filename,
-    get_image_sequence_metadata, # New
-    get_single_image_metadata,   # New
-    define_video_segments, # This util now uses global_log_message
-    load_json_file, # This util now uses global_log_message
-    save_json_file, # This util now uses global_log_message
+    get_image_sequence_metadata,
+    get_single_image_metadata,
+    define_video_segments,
+    load_json_file,
+    save_json_file,
     save_depth_visual_as_mp4_util,
     save_depth_visual_as_png_sequence_util,
     save_depth_visual_as_exr_sequence_util,
@@ -44,11 +37,9 @@ from depthcrafter.utils import (
 )
 
 try:
-    import merge_depth_segments
+    from depthcrafter import merge_depth_segments
 except ImportError as e:
-    # Use global_log_message here if it's critical at module load time,
-    # otherwise, a log during __init__ or an operation might be better.
-    print(f"WARNING (gui): Could not import 'merge_depth_segments'. Merging functionality will not be available. Error: {e}")
+    _logger.warning(f"Could not import 'merge_depth_segments'. Merging functionality will not be available. Error: {e}")
     merge_depth_segments = None
 
 try:
@@ -57,33 +48,23 @@ try:
     OPENEXR_AVAILABLE_GUI = True
 except ImportError:
     OPENEXR_AVAILABLE_GUI = False
-    # Log this using the catalog once it's set up, or print if critical before setup
-    print("WARNING (gui): OpenEXR or Imath module not found. EXR options might be limited.")
+    _logger.warning("OpenEXR or Imath module not found. EXR options might be limited.")
 
 
 from typing import Optional, Tuple, List, Dict
 
-GUI_VERSION = "25.06.01"
+GUI_VERSION = "25.09.10"
 
 class DepthCrafterGUI:
     CONFIG_FILENAME = "config.json"
-    HELP_CONTENT_FILENAME = "help_content.json"
+    HELP_CONTENT_FILENAME = os.path.join("depthcrafter", "help_content.json")
     MOVE_ORIGINAL_TO_FINISHED_FOLDER_ON_COMPLETION = True
     SETTINGS_FILETYPES = [("JSON files", "*.json"), ("All files", "*.*")]
     LAST_SETTINGS_DIR_CONFIG_KEY = "last_settings_dir"
     VIDEO_EXTENSIONS = ["*.mp4", "*.avi", "*.mov", "*.mkv", "*.webm", "*.flv", "*.gif"]
     IMAGE_EXTENSIONS = ["*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tiff", "*.exr"]
 
-    # Replaces the old self.log_message. This method's job is to put messages onto the GUI queue.
-    def _queue_message_for_gui_log(self, message_string: str):
-        """Queues a raw message string for display in the GUI log widget."""
-        self.message_queue.put(("log_display", message_string))
-
-    def log_message_if_verbose(self, message): # This was for resume logic
-        # For resume logic, we can use DEBUG level messages.
-        # The message_id should be specific to the resume action.
-        # Example: global_log_message("GUI_RESUME_VERBOSE_CHECK", details=message)
-        pass # Or log with a specific ID at DEBUG level
+    # Removed _queue_message_for_gui_log and log_message_if_verbose
 
     def _get_segments_to_resume_or_overwrite(self, vid_path, original_basename, 
                                              segment_subfolder_path, all_potential_segments_from_define,
@@ -102,10 +83,10 @@ class DepthCrafterGUI:
             choice = messagebox.askyesnocancel("Resume or Overwrite Finalized Segments?", msg_dialog, parent=self.root)
 
             if choice is True:
-                global_log_message("GUI_RESUME_REPROCESS_FAILED_MASTER_START", basename=original_basename)
-                master_data = load_json_file(master_meta_path) # load_json_file uses global_log_message
+                _logger.info(f"Attempting to re-process failed segments for {original_basename} based on existing master metadata.")
+                master_data = load_json_file(master_meta_path)
                 if not master_data or "jobs_info" not in master_data:
-                    global_log_message("GUI_RESUME_MASTER_LOAD_FAIL_WARN", basename=original_basename)
+                    _logger.warning(f"Could not load master metadata or 'jobs_info' missing for {original_basename}. Defaulting to overwrite.")
                     choice = False # Fallthrough
                 else:
                     failed_segment_jobs_to_run = []
@@ -118,36 +99,36 @@ class DepthCrafterGUI:
                             successful_jobs_from_old_master.append(job_in_meta)
                         elif seg_id is not None and seg_id in potential_segments_dict:
                             failed_segment_jobs_to_run.append(potential_segments_dict[seg_id])
-                            global_log_message("GUI_RESUME_QUEUEING_FAILED_SEGMENT", segment_id=seg_id, basename=original_basename, status=job_in_meta.get('status', 'unknown'))
+                            _logger.debug(f"  Queueing segment ID {seg_id} (status: {job_in_meta.get('status', 'unknown')}) for {original_basename} for re-processing.")
                         else:
-                            global_log_message("GUI_RESUME_UNQUEUEABLE_SEGMENT_WARN", segment_id=seg_id, status=job_in_meta.get('status'), basename=original_basename)
+                            _logger.warning(f"  Warning: Segment (ID: {seg_id}, Status: {job_in_meta.get('status')}) from master_meta for {original_basename} not re-queueable. It will be ignored.")
                     
                     if not failed_segment_jobs_to_run:
-                        global_log_message("GUI_RESUME_NO_FAILED_SEGMENTS_IN_MASTER", basename=original_basename)
+                        _logger.info(f"No re-processable failed segments found in master_meta for {original_basename}. All existing successful segments will be preserved if merging.")
                         base_job_info_for_video_ref["pre_existing_successful_jobs"] = successful_jobs_from_old_master
                         return [], "skipped_no_failed_segments_in_master_for_reprocessing"
                     
                     try:
                         backup_master_meta_path = master_meta_path + f".backup_{time.strftime('%Y%m%d%H%M%S')}"
                         shutil.move(master_meta_path, backup_master_meta_path)
-                        global_log_message("GUI_BACKED_UP_FILE", original_path=os.path.basename(master_meta_path), backup_path=os.path.basename(backup_master_meta_path))
+                        _logger.debug(f"Backed up existing file {os.path.basename(master_meta_path)} to: {os.path.basename(backup_master_meta_path)}")
                     except Exception as e:
-                        global_log_message("GUI_RESUME_BACKUP_MASTER_FAIL_WARN", error=str(e))
+                        _logger.warning(f"  Warning: Could not back up existing master metadata: {e}. It might be overwritten.")
 
                     base_job_info_for_video_ref["pre_existing_successful_jobs"] = successful_jobs_from_old_master
                     return failed_segment_jobs_to_run, "reprocessing_failed_from_master"
             
             if choice is False: 
-                global_log_message("GUI_RESUME_DELETING_FINALIZED_START", basename=original_basename, path=segment_subfolder_path)
+                _logger.info(f"User chose/defaulted to delete existing segment folder and start fresh for {original_basename}: {segment_subfolder_path}")
                 try:
                     if os.path.exists(segment_subfolder_path): shutil.rmtree(segment_subfolder_path)
-                    global_log_message("GUI_RESUME_DELETING_FOLDER_SUCCESS", path=segment_subfolder_path)
+                    _logger.debug(f"  Successfully deleted: {segment_subfolder_path}")
                 except Exception as e:
-                    global_log_message("GUI_RESUME_DELETING_FOLDER_ERROR", path=segment_subfolder_path, error=str(e))
+                    _logger.error(f"  Error deleting {segment_subfolder_path}: {e}. Processing may fail or overwrite.")
                 return all_potential_segments_from_define, "overwriting_finalized"
             
             else: # Cancel
-                global_log_message("GUI_RESUME_SKIPPING_FINALIZED", basename=original_basename)
+                _logger.info(f"Skipping {original_basename} (user chose to cancel on finalized segments).")
                 return [], "skipped_finalized"
 
         elif os.path.exists(segment_subfolder_path):
@@ -161,7 +142,7 @@ class DepthCrafterGUI:
             choice_incomplete = messagebox.askyesnocancel("Resume Incomplete Segments?", msg_dialog_incomplete, parent=self.root)
 
             if choice_incomplete is True:
-                global_log_message("GUI_RESUME_INCOMPLETE_START", basename=original_basename)
+                _logger.info(f"Attempting to resume incomplete segments for {original_basename}.")
                 segments_to_run = []
                 num_already_complete = 0
                 completed_segment_metadata_from_json = []
@@ -176,44 +157,44 @@ class DepthCrafterGUI:
 
                     is_complete_and_successful = False
                     if os.path.exists(npz_path) and os.path.exists(json_path):
-                        segment_meta = load_json_file(json_path) # Uses global log, might be too verbose if log_message_if_verbose was intended for silence
+                        segment_meta = load_json_file(json_path)
                         if segment_meta and segment_meta.get("status") == "success":
                             is_complete_and_successful = True
                             num_already_complete += 1
                             completed_segment_metadata_from_json.append(segment_meta)
                         else:
                             status_msg = segment_meta.get('status', 'unknown') if segment_meta else 'JSON missing/corrupt'
-                            global_log_message("GUI_RESUME_INCOMPLETE_SEGMENT_REPROCESS", segment_id=seg_id+1, total_segments=total_segs, basename=original_basename, status=status_msg)
+                            _logger.info(f"  Segment {seg_id+1}/{total_segs} for {original_basename} found but not successful (status: {status_msg}). Will re-process.")
                     else:
-                        global_log_message("GUI_RESUME_INCOMPLETE_SEGMENT_MISSING", segment_id=seg_id+1, total_segments=total_segs, basename=original_basename, npz_filename=expected_npz_filename)
+                        _logger.debug(f"  Segment {seg_id+1}/{total_segs} for {original_basename} (NPZ: {expected_npz_filename}) not found or JSON missing. Will process.")
 
                     if not is_complete_and_successful:
                         segments_to_run.append(potential_segment_job)
                 
                 if num_already_complete > 0:
-                    global_log_message("GUI_PRESERVING_SUCCESSFUL_SEGMENTS", num_complete=num_already_complete, video_name=original_basename)
+                    _logger.info(f"Found {num_already_complete} successfully completed segments for {original_basename} that will be skipped during processing.")
                 
                 base_job_info_for_video_ref["pre_existing_successful_jobs"] = completed_segment_metadata_from_json
 
                 if not segments_to_run and num_already_complete == len(all_potential_segments_from_define):
-                    global_log_message("GUI_RESUME_ALL_SEGS_COMPLETE_NO_MASTER_WARN", basename=original_basename)
+                    _logger.warning(f"  All segments for {original_basename} appear complete from individual files, but master_meta was missing. Consider re-merging. Skipping processing.")
                     return [], "skipped_all_segments_found_complete_no_master"
                 elif not segments_to_run and num_already_complete < len(all_potential_segments_from_define):
-                     global_log_message("GUI_RESUME_NO_SEGS_TO_RUN_INCOMPLETE_WARN", basename=original_basename, total_defined=len(all_potential_segments_from_define), found_complete=num_already_complete)
+                     _logger.warning(f"  No segments to run for {original_basename}, but not all were found complete. Total defined: {len(all_potential_segments_from_define)}, Found complete: {num_already_complete}")
                      return [], "skipped_no_segments_to_run_incomplete"
                 return segments_to_run, "resuming_incomplete"
 
             elif choice_incomplete is False:
-                global_log_message("GUI_RESUME_DELETING_INCOMPLETE_START", basename=original_basename, path=segment_subfolder_path)
+                _logger.info(f"User chose to delete existing incomplete segment folder and start fresh for {original_basename}: {segment_subfolder_path}")
                 try:
                     if os.path.exists(segment_subfolder_path): shutil.rmtree(segment_subfolder_path)
-                    global_log_message("GUI_RESUME_DELETING_FOLDER_SUCCESS", path=segment_subfolder_path)
+                    _logger.debug(f"  Successfully deleted: {segment_subfolder_path}")
                 except Exception as e:
-                    global_log_message("GUI_RESUME_DELETING_FOLDER_ERROR", path=segment_subfolder_path, error=str(e))
+                    _logger.error(f"  Error deleting {segment_subfolder_path}: {e}. Processing may fail or overwrite.")
                 return all_potential_segments_from_define, "overwriting_incomplete"
             
             else: # Cancel
-                global_log_message("GUI_RESUME_SKIPPING_INCOMPLETE", basename=original_basename)
+                _logger.info(f"Skipping {original_basename} (user chose to cancel on incomplete segments).")
                 return [], "skipped_incomplete"
                 
         else: # Segment folder does not exist
@@ -249,13 +230,13 @@ class DepthCrafterGUI:
         self.min_frames_to_keep_npz_var = tk.IntVar(value=0)
         self.keep_intermediate_segment_visual_format_var = tk.StringVar(value="mp4")
         self.merge_output_suffix_var = tk.StringVar(value="_depth") # New Variable
-        self.merge_script_gui_silence_level_var = tk.StringVar(value="Normal (Info)") # This now maps to GUI verbosity
+        # self.merge_script_gui_silence_level_var = tk.StringVar(value="Normal (Info)") # Removed GUI verbosity control
         self.current_input_mode = "batch_folder" # "batch_folder", "single_video_file", "single_image_file", "image_sequence_folder"
         self.single_file_mode_active = False # True if a single file/sequence folder is explicitly loaded
         self.effective_move_original_on_completion = self.MOVE_ORIGINAL_TO_FINISHED_FOLDER_ON_COMPLETION
 
         self.all_tk_vars = {
-            "input_dir_or_file_var": self.input_dir_or_file_var, # Use new var name
+            "input_dir_or_file_var": self.input_dir_or_file_var,
             "output_dir": self.output_dir,
             "guidance_scale": self.guidance_scale,
             "inference_steps": self.inference_steps,
@@ -281,35 +262,32 @@ class DepthCrafterGUI:
             "keep_intermediate_npz_var": self.keep_intermediate_npz_var,
             "min_frames_to_keep_npz_var": self.min_frames_to_keep_npz_var,
             "keep_intermediate_segment_visual_format_var": self.keep_intermediate_segment_visual_format_var,
-            "merge_output_suffix_var": self.merge_output_suffix_var, # Add new var here
-            "merge_script_gui_silence_level_var": self.merge_script_gui_silence_level_var, # Will be used to set GUI verbosity
+            "merge_output_suffix_var": self.merge_output_suffix_var,
+            # "merge_script_gui_silence_level_var": self.merge_script_gui_silence_level_var, # Removed
         }
         self.initial_default_settings = self._collect_all_settings()
         self._help_data = None
 
         self.last_settings_dir = os.getcwd()
-        self.message_queue = queue.Queue() # For GUI log updates
+        self.message_queue = queue.Queue() # Still needed for progress updates
 
-        # Set up message_catalog for GUI
-        set_gui_logger_callback(self._queue_message_for_gui_log)
-        set_gui_verbosity(self._get_mapped_gui_verbosity_level()) # Set initial GUI verbosity
-        mc_configure_timestamps(console=True, gui=False) # Example: GUI adds its own timestamps via queue processor
+        # Removed message_catalog setup
+        # set_gui_logger_callback(self._queue_message_for_gui_log)
+        # set_gui_verbosity(self._get_mapped_gui_verbosity_level()) # Removed
+        # mc_configure_timestamps(console=True, gui=False) # Removed
 
         self.load_config() 
         self.stop_event = threading.Event()
         self.processing_thread = None
         self._create_menubar()
         self.create_widgets() 
-        self.root.after(100, self.process_queue) # For GUI log updates
+        # self.root.after(100, self.process_queue) # Removed GUI log update
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.toggle_merge_related_options_active_state()
-
-        # Initial log message using the new system, if desired
                 
-        global_log_message("GUI_INIT_COMPLETE") # THE ONE AND ONLY "INIT COMPLETE" LOG FROM __init__
+        _logger.info("DepthCrafter GUI initialized successfully.")
 
     def _create_menubar(self):
-        # ... (menubar creation unchanged) ...
         menubar = tk.Menu(self.root)
         self.root.config(menu=menubar)
 
@@ -327,14 +305,13 @@ class DepthCrafterGUI:
 
     def _load_help_content(self):
         if self._help_data is None:
-            self._help_data = load_json_file(DepthCrafterGUI.HELP_CONTENT_FILENAME) # Util handles logging
+            self._help_data = load_json_file(DepthCrafterGUI.HELP_CONTENT_FILENAME)
             if not self._help_data:
                 self._help_data = {}
-                global_log_message("GUI_HELP_LOAD_FAIL_WARN", filename=DepthCrafterGUI.HELP_CONTENT_FILENAME) # New ID
+                _logger.warning(f"Warning: Could not load help content from {DepthCrafterGUI.HELP_CONTENT_FILENAME}. Help icons will be disabled or show 'not found'.")
         return self._help_data
 
     def _show_help_for(self, help_key: str):
-        # ... (unchanged, uses messagebox) ...
         help_content_store = self._load_help_content()
         content = help_content_store.get(help_key)
         if not content:
@@ -376,64 +353,61 @@ class DepthCrafterGUI:
                 value = tk_var.get()
                 settings_data[key] = value
                 if key == "target_fps": # Specific debug for target_fps
-                    print(f"DEBUG: _collect_all_settings: target_fps raw value: {value}, type: {type(value)}")
+                    _logger.debug(f"_collect_all_settings: target_fps raw value: {value}, type: {type(value)}")
             except tk.TclError:
-                global_log_message("GUI_SETTINGS_GET_VAL_WARN", setting_key=key)
+                _logger.warning(f"Warning: Could not get value for setting '{key}'. Skipping.")
         return settings_data
 
     def _apply_all_settings(self, settings_data: dict):
         for key, value_from_json in settings_data.items():
             if key == "target_fps": # Specific debug
-                print(f"DEBUG: _apply_all_settings: Loading target_fps from JSON. Value: {value_from_json}, Type: {type(value_from_json)}")
+                _logger.debug(f"_apply_all_settings: Loading target_fps from JSON. Value: {value_from_json}, Type: {type(value_from_json)}")
             if key in self.all_tk_vars:
                 try:
                     self.all_tk_vars[key].set(value_from_json)
                     # After setting, get it back to see what DoubleVar stored
                     if key == "target_fps":
                         val_in_doublevar = self.all_tk_vars[key].get()
-                        print(f"DEBUG: _apply_all_settings: target_fps in DoubleVar after set: {val_in_doublevar}, Type: {type(val_in_doublevar)}")
+                        _logger.debug(f"_apply_all_settings: target_fps in DoubleVar after set: {val_in_doublevar}, Type: {type(val_in_doublevar)}")
                 except tk.TclError:
-                     global_log_message("GUI_SETTINGS_SET_VAL_WARN", setting_key=key, value=value) # New ID
+                     _logger.warning(f"Warning: Could not set value for setting '{key}' to '{value_from_json}'. Skipping.")
             else:
-                global_log_message("GUI_SETTINGS_UNKNOWN_KEY_WARN", setting_key=key) # New ID
+                _logger.warning(f"Warning: Unknown setting '{key}' found in settings file. Ignoring.")
         if hasattr(self, 'process_as_segments_var'):
             self.toggle_merge_related_options_active_state()
-        # Update GUI verbosity if it was part of loaded settings
-        set_gui_verbosity(self._get_mapped_gui_verbosity_level())
+        # Removed update GUI verbosity
 
     def _reset_settings_to_defaults(self):
         if messagebox.askyesno("Reset Settings", "Are you sure you want to reset all settings to their default values?"):
             self._apply_all_settings(self.initial_default_settings)
-            global_log_message("GUI_SETTINGS_RESET") # Using existing ID
+            _logger.info("All settings have been reset to their initial defaults.")
 
     def _load_all_settings(self):
         filepath = filedialog.askopenfilename(title="Load Settings File", filetypes=self.SETTINGS_FILETYPES, initialdir=self.last_settings_dir)
         if not filepath:
-            global_log_message("GUI_ACTION_CANCELLED_BY_USER", action="Load settings") # New ID
+            _logger.info("Load settings cancelled by user.")
             return
         self.last_settings_dir = os.path.dirname(filepath)
-        settings_data = load_json_file(filepath) # Util handles logging
+        settings_data = load_json_file(filepath)
         if settings_data:
             self._apply_all_settings(settings_data)
-            global_log_message("GUI_SETTINGS_LOADED", filepath=filepath) # Using existing ID
+            _logger.info(f"Successfully loaded settings from: {filepath}")
         else:
-            messagebox.showerror("Load Error", f"Could not load settings from:\n{filepath}\nSee log for details.")
+            messagebox.showerror("Load Error", f"Could not load settings from:\n{filepath}\nSee console log for details.")
 
     def _save_all_settings_as(self):
         filepath = filedialog.asksaveasfilename(title="Save Settings As", filetypes=self.SETTINGS_FILETYPES, defaultextension=".json", initialdir=self.last_settings_dir)
         if not filepath:
-            global_log_message("GUI_ACTION_CANCELLED_BY_USER", action="Save settings")
+            _logger.info("Save settings cancelled by user.")
             return
         self.last_settings_dir = os.path.dirname(filepath)
         current_settings = self._collect_all_settings()
-        if save_json_file(current_settings, filepath, indent=4): # Util handles logging
-            global_log_message("GUI_SETTINGS_SAVED", filepath=filepath) # Using existing ID
+        if save_json_file(current_settings, filepath, indent=4):
+            _logger.info(f"Successfully saved settings to: {filepath}")
             messagebox.showinfo("Save Successful", f"Settings saved to:\n{filepath}")
         else:
-            messagebox.showerror("Save Error", f"Could not save settings to:\n{filepath}\nSee log for details.")
-            # save_json_file already logged the specific error via global_log_message
+            messagebox.showerror("Save Error", f"Could not save settings to:\n{filepath}\nSee console log for details.")
 
-    # ... (_add_param_with_help, _add_manual_help_icon unchanged) ...
     def _add_param_with_help(self, parent, label_text: str, var, row: int, help_key: str, entry_width=18, col_offset=0):
         tk.Label(parent, text=label_text).grid(row=row, column=0 + col_offset, sticky="e", padx=5, pady=2)
         entry = tk.Entry(parent, textvariable=var, width=entry_width)
@@ -453,13 +427,13 @@ class DepthCrafterGUI:
         self.stop_event.clear()
         self.progress["value"] = 0
         self.progress["maximum"] = len(video_processing_jobs)
-        global_log_message("GUI_PROCESSING_BATCH_START", num_jobs=len(video_processing_jobs)) # New ID
+        _logger.info(f"Starting batch processing for {len(video_processing_jobs)} items...")
 
         try:
             if torch.cuda.is_available():
-                 global_log_message("CUDA_AVAILABLE", device_name=torch.cuda.get_device_name(0))
+                 _logger.info(f"CUDA available. Device: {torch.cuda.get_device_name(0)}")
             else:
-                global_log_message("CUDA_UNAVAILABLE")
+                _logger.warning("CUDA not available. Processing will use CPU (if supported).")
             demo = DepthCrafterDemo(
                 unet_path="tencent/DepthCrafter",
                 pre_train_path="stabilityai/stable-video-diffusion-img2vid-xt",
@@ -467,20 +441,16 @@ class DepthCrafterGUI:
                 use_cudnn_benchmark=self.use_cudnn_benchmark.get(),
             )
         except Exception as e:
-            global_log_message("MODEL_INIT_FAILURE", component="DepthCrafterDemo from GUI", reason=str(e))
-            # self.message_queue.put(("log_display", "Processing cannot continue. Check model paths and dependencies."))
-            # import traceback
-            # self.message_queue.put(("log_display", traceback.format_exc()))
-            # The above lines are now handled by global_log_message itself if it prints traceback
+            _logger.exception(f"CRITICAL: Failed to initialize DepthCrafterDemo: {e}")
             return
 
         all_videos_master_metadata = {} 
 
-        global_log_message("GUI_SCAN_FOLDER_START") # New ID
+        _logger.info("Scanning input folder: Please wait...")
         
         for i, job_info_to_run in enumerate(video_processing_jobs):
             if self.stop_event.is_set():
-                global_log_message("GUI_CANCEL_REQUEST_HONORED") # New ID
+                _logger.info("Processing cancelled by user after current item.")
                 break
             
             current_video_path = job_info_to_run["video_path"] 
@@ -491,8 +461,7 @@ class DepthCrafterGUI:
                 current_video_comprehensive_base_info = base_job_info_map.get(current_video_path, {})
                 total_segments_for_this_video_overall = job_info_to_run.get("total_segments") if is_segment_job else 1
                 if total_segments_for_this_video_overall is None and is_segment_job:
-                    global_log_message("GUI_PROCESSING_MISSING_TOTAL_SEGS_WARN", basename=original_basename)
-                    total_segments_for_this_video_overall = 1
+                    _logger.warning(f"Warning: 'total_segments' missing for segment job of {original_basename}. Defaulting to 1 for master_meta init.")
 
                 all_videos_master_metadata[current_video_path] = self._initialize_master_metadata_entry(
                     original_basename, 
@@ -502,15 +471,14 @@ class DepthCrafterGUI:
                 
                 pre_existing_successful_segment_metadatas = current_video_comprehensive_base_info.get("pre_existing_successful_jobs", [])
                 if pre_existing_successful_segment_metadatas:
-                    global_log_message("GUI_PROCESSING_LOADING_PREEXISTING_SEGS", count=len(pre_existing_successful_segment_metadatas), basename=original_basename)
+                    _logger.debug(f"Loading {len(pre_existing_successful_segment_metadatas)} pre-existing successful segment metadata entries for {original_basename} into current run's master data.")
                     all_videos_master_metadata[current_video_path]["jobs_info"].extend(pre_existing_successful_segment_metadatas)
                     all_videos_master_metadata[current_video_path]["completed_successful_jobs"] += len(pre_existing_successful_segment_metadatas)
             
             master_meta_for_this_vid = all_videos_master_metadata[current_video_path]
             
             log_msg_prefix = f"Segment {job_info_to_run.get('segment_id', -1)+1}/{job_info_to_run.get('total_segments', 0)}" if is_segment_job else "Full video"
-            # Using existing PROCESSING_JOB_PROGRESS
-            global_log_message("PROCESSING_JOB_PROGRESS", item_name=original_basename, job_type=log_msg_prefix, current_job=i+1, total_jobs=len(video_processing_jobs))
+            _logger.info(f"Processing {original_basename} - {log_msg_prefix} ({i+1}/{len(video_processing_jobs)})")
 
             job_successful, returned_job_specific_metadata = self._process_single_job(demo, job_info_to_run, master_meta_for_this_vid)
             
@@ -541,17 +509,16 @@ class DepthCrafterGUI:
                     if hasattr(demo.pipe, 'unet') and demo.pipe.unet is not None: del demo.pipe.unet
                     del demo.pipe
                 del demo
-                global_log_message("MODEL_RELEASE_SUCCESS", component="DepthCrafter") # New ID
+                _logger.debug("DepthCrafter model components released.")
             except Exception as e_cleanup:
-                global_log_message("MODEL_RELEASE_ERROR", component="DepthCrafter", error=str(e_cleanup)) # New ID
+                _logger.warning(f"Error during DepthCrafter model cleanup: {e_cleanup}")
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            global_log_message("CUDA_CACHE_CLEARED")
-        global_log_message("GUI_PROCESSING_BATCH_COMPLETE") # New ID
+            _logger.info("CUDA cache cleared.")
+        _logger.info("All processing jobs complete!")
 
     def _initialize_master_metadata_entry(self, original_basename, job_info_for_original_details, total_expected_jobs_for_this_video):
-        # ... (logic unchanged, just ensure no direct prints) ...
         entry = {
             "original_video_basename": original_basename,
             "original_video_details": {
@@ -579,13 +546,10 @@ class DepthCrafterGUI:
         return entry
 
     def _process_single_job(self, demo, job_info, master_meta_for_this_vid):
-        # job_info is the complete dictionary for this specific job (segment or full)
-        # It already contains "video_path", "source_type", "original_basename", "gui_fps_setting_at_definition", etc.
-        # and if it's a segment, it has "segment_id", "num_frames_to_load_raw", etc.
         
         returned_job_specific_metadata = {}
         job_successful = False
-        is_segment_job = job_info.get("is_segment", False) # Get from job_info
+        is_segment_job = job_info.get("is_segment", False)
         original_basename = job_info["original_basename"]
         
         snapshotted_settings = master_meta_for_this_vid["global_processing_settings"]
@@ -593,11 +557,6 @@ class DepthCrafterGUI:
         inference_steps_for_job = snapshotted_settings["inference_steps"]
         max_res_for_job = snapshotted_settings["max_res_settings"]
         seed_for_job = snapshotted_settings["seed_setting"]
-        # target_fps_for_job is part of job_info["gui_fps_setting_at_definition"]
-
-        # process_length_for_run: for full video, it's from GUI settings.
-        # For segments, it's implicitly defined by job_info["num_frames_to_load_raw"].
-        # demo.run's `process_length_for_read_full_video` is for the "full source" if not segmented.
         process_length_for_run_param = snapshotted_settings["process_max_frames_setting"] if not is_segment_job else -1
         
         window_size_for_pipe_call = snapshotted_settings["gui_window_size_setting"]
@@ -608,15 +567,12 @@ class DepthCrafterGUI:
             if is_segment_job:
                 if self.keep_intermediate_npz_var.get():
                     min_frames_thresh = self.min_frames_to_keep_npz_var.get()
-                    # Get orig_vid_frame_count from job_info itself, as it's part of base_job_info
                     orig_vid_frame_count = job_info.get("original_video_raw_frame_count", 0)
                     if min_frames_thresh <= 0 or orig_vid_frame_count >= min_frames_thresh:
                         keep_npz_for_this_job_run = True
             
-            # Pass the *entire job_info* as the first argument to demo.run
-            # If it's a segment, also pass it as segment_job_info_param for clarity in demo.run's logic.
             saved_data_filepath, returned_job_specific_metadata = demo.run(
-                video_path_or_frames_or_info=job_info, # Pass the whole job spec here
+                video_path_or_frames_or_info=job_info,
                 num_denoising_steps=inference_steps_for_job, 
                 guidance_scale=guidance_scale_for_job,
                 base_output_folder=self.output_dir.get(), 
@@ -625,32 +581,31 @@ class DepthCrafterGUI:
                 process_length_for_read_full_video=process_length_for_run_param, 
                 max_res=max_res_for_job, 
                 seed=seed_for_job, 
-                original_video_basename_override=original_basename, # Can also get from job_info
-                segment_job_info_param=job_info if is_segment_job else None, # Pass job_info again if it's a segment
+                original_video_basename_override=original_basename,
+                segment_job_info_param=job_info if is_segment_job else None,
                 keep_intermediate_npz_config=keep_npz_for_this_job_run,
                 intermediate_segment_visual_format_config=self.keep_intermediate_segment_visual_format_var.get(),
                 save_final_json_for_this_job_config=self.save_final_output_json_var.get()
             )
-            if not returned_job_specific_metadata: # Should not happen if demo.run is robust
+            if not returned_job_specific_metadata:
                 returned_job_specific_metadata = {"status": "failure_no_metadata_from_run"}
-                global_log_message("GUI_JOB_NO_METADATA_WARN", basename=original_basename) # New ID
+                _logger.warning(f"Warning: No job-specific metadata returned from run for {original_basename}.")
             
             if saved_data_filepath and returned_job_specific_metadata.get("status") == "success":
                 job_successful = True
-            else: # Log failure here if not successful
+            else:
                 log_msg_prefix_local = f"Segment {job_info.get('segment_id', -1)+1}/{job_info.get('total_segments', 0)}" if is_segment_job else "Full video"
-                global_log_message("GUI_JOB_STATUS_REPORT", basename=original_basename, job_prefix=log_msg_prefix_local, status=returned_job_specific_metadata.get('status', 'unknown_status')) # New ID
+                _logger.info(f"  Job for {original_basename} ({log_msg_prefix_local}) status: {returned_job_specific_metadata.get('status', 'unknown_status')}")
         
         except Exception as e:
             if not returned_job_specific_metadata: returned_job_specific_metadata = {}
             returned_job_specific_metadata["status"] = "exception_in_gui_process_single_job"
             returned_job_specific_metadata["error_message"] = str(e)
             log_msg_prefix_local = f"Segment {job_info.get('segment_id', -1)+1}/{job_info.get('total_segments', 0)}" if is_segment_job else "Full video"
-            global_log_message("GUI_JOB_EXCEPTION", basename=original_basename, job_prefix=log_msg_prefix_local, error=str(e), traceback_info=sys.exc_info()) # New ID
+            _logger.exception(f"  Exception during job for {original_basename} ({log_msg_prefix_local}): {e}")
         return job_successful, returned_job_specific_metadata
 
     def _determine_video_paths_and_processing_mode(self, original_basename, master_meta_for_this_vid):
-        # ... (logic unchanged) ...
         main_output_dir_for_video = self.output_dir.get()
         was_processed_as_segments = master_meta_for_this_vid["global_processing_settings"]["processed_as_segments"]
         segment_subfolder_path = None
@@ -660,7 +615,6 @@ class DepthCrafterGUI:
         return main_output_dir_for_video, segment_subfolder_path, was_processed_as_segments
 
     def _finalize_video_processing(self, current_video_path, original_basename, master_meta_for_this_vid):
-        # ... (status logic unchanged) ...
         if master_meta_for_this_vid["completed_failed_jobs"] == 0:
             master_meta_for_this_vid["overall_status"] = "all_success"
         elif master_meta_for_this_vid["completed_successful_jobs"] > 0:
@@ -668,7 +622,7 @@ class DepthCrafterGUI:
         else:
             master_meta_for_this_vid["overall_status"] = "all_failed"
 
-        global_log_message("PROCESSING_VIDEO_FINAL_STATUS", basename=original_basename, status=master_meta_for_this_vid['overall_status']) # New ID
+        _logger.info(f"Finished processing for {original_basename}. Overall Status: {master_meta_for_this_vid['overall_status']}.")
         
         main_output_dir, segment_subfolder_path, was_segments = self._determine_video_paths_and_processing_mode(original_basename, master_meta_for_this_vid)
         master_meta_filepath, merge_success, final_merged_path = None, False, "N/A (Merge not applicable or failed)"
@@ -677,45 +631,35 @@ class DepthCrafterGUI:
             if was_segments and meta_saved and master_meta_for_this_vid["overall_status"] in ["all_success", "partial_success"]:
                 merge_success, final_merged_path = self._handle_segment_merging(master_meta_filepath, original_basename, main_output_dir, master_meta_for_this_vid)
             elif was_segments:
-                global_log_message("GUI_MERGE_SKIPPED_DUE_TO_STATUS", basename=original_basename, status=master_meta_for_this_vid['overall_status'], meta_saved=meta_saved, segment_folder=segment_subfolder_path or 'N/A') # New ID
+                _logger.debug(f"Skipping merge for {original_basename} (status: {master_meta_for_this_vid['overall_status']}, meta_saved: {meta_saved}). Segments remain in {segment_subfolder_path or 'N/A'}")
             
             if self.save_final_output_json_var.get():
                 self._save_final_output_sidecar_json(original_basename, final_merged_path, master_meta_filepath, master_meta_for_this_vid, was_segments, merge_success)
             
-            if was_segments and segment_subfolder_path: # Check segment_subfolder_path existence
+            if was_segments and segment_subfolder_path:
                 self._cleanup_segment_folder(segment_subfolder_path, original_basename, master_meta_for_this_vid)
         except Exception as e:
-            global_log_message("PROCESSING_FINALIZE_ERROR", item_name=original_basename, error_message=str(e)) # Using existing ID
+            _logger.exception(f"Error during finalization for {original_basename}: {e}")
 
-        # Determine the final status to decide on moving the original source
         final_status = master_meta_for_this_vid.get("overall_status", "all_failed")
 
-        # Decide if we should move the original file at all
         if self.effective_move_original_on_completion:
-            # If moving is enabled (i.e., not single file mode), decide WHERE to move it
-            
             target_subfolder_name = ""
             if final_status == "all_success":
                 target_subfolder_name = "finished"
             elif final_status in ["partial_success", "all_failed"]:
-                # If there were any failures at all, move to a "failed" folder
                 target_subfolder_name = "failed"
             else:
-                # Should not happen, but as a fallback, don't move it
-                global_log_message("GUI_MOVE_UNKNOWN_STATUS_WARN", basename=original_basename, status=final_status)
+                _logger.warning(f"Move Original: Could not determine 'finished' or 'failed' status for '{original_basename}' (status: '{final_status}'). Original file will not be moved.")
 
             if target_subfolder_name:
-                # Call the move function with the determined target subfolder
                 self._move_original_source(current_video_path, original_basename, target_subfolder_name)
         else:
-            # This is for single file mode, where we don't move the original
-            global_log_message("GUI_ORIGINAL_VIDEO_MOVE_SKIPPED_SINGLE_MODE", basename=original_basename)
+            _logger.info(f"Skipped moving original source '{original_basename}' (single file/sequence mode).")
 
     def _move_original_source(self, current_video_path: str, original_basename: str, target_subfolder: str):
-        # target_subfolder will be "finished" or "failed"
-        global_log_message("GUI_ORIGINAL_SOURCE_MOVE_ATTEMPT", basename=original_basename, target_folder=target_subfolder)
+        _logger.info(f"Attempting to move original source '{original_basename}' to '{target_subfolder}' folder.")
         try:
-            # --- This logic is from your last working version of the move function ---
             path_from_gui_input_field = self.input_dir_or_file_var.get()
 
             actual_input_root_for_target_folder: str
@@ -724,15 +668,13 @@ class DepthCrafterGUI:
             elif os.path.isfile(path_from_gui_input_field):
                 actual_input_root_for_target_folder = os.path.dirname(path_from_gui_input_field)
             else:
-                log_message("GUI_ORIGINAL_SOURCE_MOVE_INVALID_INPUT_ROOT_WARN", gui_input_path=path_from_gui_input_field)
+                _logger.warning(f"Move Original: The GUI input path '{path_from_gui_input_field}' is invalid for determining the target folder root. Using dirname of processed item as fallback.")
                 actual_input_root_for_target_folder = os.path.dirname(current_video_path)
                 if not os.path.isdir(actual_input_root_for_target_folder):
-                    log_message("GUI_ORIGINAL_SOURCE_MOVE_CANNOT_DETERMINE_ROOT", path=current_video_path)
-                    global_log_message("GUI_ORIGINAL_SOURCE_MOVE_ERROR", basename=original_basename, error="Cannot determine valid root for target folder.", traceback_info=None)
+                    _logger.error(f"Move Original: Cannot determine a valid root directory for target folder based on input path '{current_video_path}'.")
+                    _logger.error(f"ERROR moving original '{original_basename}': Cannot determine valid root for target folder.")
                     return
-            # --- End of logic from last working version ---
 
-            # Use the target_subfolder parameter to create the destination directory
             destination_dir = os.path.join(actual_input_root_for_target_folder, target_subfolder)
             os.makedirs(destination_dir, exist_ok=True)
             
@@ -744,14 +686,14 @@ class DepthCrafterGUI:
                     base, ext = os.path.splitext(dest_filename) 
                     new_dest_name = f"{base}{time.strftime('_%Y%m%d%H%M%S')}{ext}"
                     dest_path = os.path.join(destination_dir, new_dest_name)
-                    global_log_message("GUI_ORIGINAL_SOURCE_MOVE_RENAMED", old_name=dest_filename, new_name=new_dest_name)
+                    _logger.info(f"Move Original: Destination already exists. Renaming '{dest_filename}' to '{new_dest_name}'.")
                 
                 shutil.move(current_video_path, dest_path)
-                global_log_message("GUI_ORIGINAL_SOURCE_MOVE_SUCCESS", filename=dest_filename, destination_folder=target_subfolder)
+                _logger.info(f"Successfully moved original source '{dest_filename}' to '{target_subfolder}' folder.")
             else:
-                global_log_message("GUI_ORIGINAL_SOURCE_MOVE_SOURCE_NOT_FOUND", path=current_video_path)
+                _logger.warning(f"Move Original: Source path to move does not exist: {current_video_path}")
         except Exception as e:
-            global_log_message("GUI_ORIGINAL_SOURCE_MOVE_ERROR", basename=original_basename, error=str(e), traceback_info=sys.exc_info())
+            _logger.exception(f"ERROR moving original '{original_basename}': {e}")
 
     def _save_master_metadata_and_cleanup_segment_json(self, master_meta_to_save, original_basename, main_output_dir, was_segments, segment_subfolder_path):
         master_meta_filepath, meta_saved = None, False
@@ -765,11 +707,11 @@ class DepthCrafterGUI:
 
         should_save_master_meta_here = was_segments
         if should_save_master_meta_here:
-            if save_json_file(master_meta_to_save, master_meta_filepath): # Util logs success/fail
-                global_log_message("GUI_MASTER_META_SAVED", basename=original_basename, path=master_meta_filepath) # New ID
+            if save_json_file(master_meta_to_save, master_meta_filepath):
+                _logger.debug(f"Saved master metadata for {original_basename} to {master_meta_filepath}")
                 meta_saved = True
             if was_segments and meta_saved and segment_subfolder_path:
-                global_log_message("GUI_CLEANUP_INDIVIDUAL_SEG_JSON_START", basename=original_basename) # New ID
+                _logger.debug(f"  Attempting to delete individual segment JSONs for {original_basename} (master created).")
                 deleted_count = 0
                 for job_data in master_meta_to_save.get("jobs_info", []):
                     npz_file = job_data.get("output_segment_filename")
@@ -777,23 +719,23 @@ class DepthCrafterGUI:
                         json_to_del = os.path.join(segment_subfolder_path, get_sidecar_json_filename(npz_file))
                         if os.path.exists(json_to_del):
                             try: os.remove(json_to_del); deleted_count += 1
-                            except Exception as e: global_log_message("GUI_CLEANUP_INDIVIDUAL_SEG_JSON_ERROR", path=json_to_del, error=str(e)) # New ID
-                global_log_message("GUI_CLEANUP_INDIVIDUAL_SEG_JSON_SUMMARY", count=deleted_count) # New ID
+                            except Exception as e: _logger.error(f"ERROR deleting individual segment JSON {json_to_del}: {e}")
+                _logger.debug(f"    Deleted {deleted_count} individual segment JSONs.")
             elif was_segments and not meta_saved:
-                global_log_message("GUI_CLEANUP_INDIVIDUAL_SEG_JSON_SKIPPED_NO_MASTER", basename=original_basename) # New ID
+                _logger.warning(f"  Skipping deletion of individual segment JSONs for {original_basename} (master_meta.json not saved).")
         elif not was_segments:
-            global_log_message("GUI_MASTER_META_SAVE_SKIPPED_FULL_VIDEO", basename=original_basename, path=os.path.basename(master_meta_filepath)) # New ID
+            _logger.debug(f"Skipping save of '{os.path.basename(master_meta_filepath)}' by _save_master_metadata for full video mode for {original_basename}.")
             meta_saved = False
         return master_meta_filepath, meta_saved
 
     def _handle_segment_merging(self, master_meta_filepath, original_basename, main_output_dir, master_meta):
         if not merge_depth_segments:
-            global_log_message("MERGE_MODULE_UNAVAILABLE", video_name=original_basename) # Use existing
+            _logger.warning(f"Segment merging for {original_basename} skipped: merge_depth_segments module not available.")
             return False, "N/A (Merge module not available)"
         
         out_fmt = self.merge_output_format_var.get()
-        output_suffix = self.merge_output_suffix_var.get() # Get the suffix
-        merged_base_name = f"{original_basename}{output_suffix}" # Use suffix
+        output_suffix = self.merge_output_suffix_var.get()
+        merged_base_name = f"{original_basename}{output_suffix}"
 
         align_method = "linear_blend" if self.merge_alignment_method_var.get() == "Linear Blend" else "shift_scale"
         merged_ok, actual_path = False, None
@@ -809,14 +751,13 @@ class DepthCrafterGUI:
             )
             merged_ok = bool(actual_path)
         except Exception as e: 
-            global_log_message("GUI_MERGE_CALL_EXCEPTION", basename=original_basename, error=str(e), traceback_info=sys.exc_info()) 
+            _logger.exception(f"Exception calling merge_depth_segments for {original_basename}: {e}")
         
         final_path_to_return = "N/A (Merge failed/path not returned)"
         if merged_ok and actual_path:
             final_path_to_return = actual_path
         elif merged_ok : 
-             global_log_message("GUI_MERGE_PATH_RETURN_ISSUE_WARN", basename=original_basename) 
-             # Construct expected filename if actual_path is None but merged_ok is True
+             _logger.warning(f"Warning: merge_depth_segments completed for {original_basename} but did not return a valid output path. Final JSON might use a guessed path.") 
              effective_out_fmt = out_fmt.replace("_main10", "")
              final_path_to_return = os.path.join(main_output_dir, f"{merged_base_name}.{effective_out_fmt}") 
         
@@ -824,14 +765,12 @@ class DepthCrafterGUI:
 
     def _save_final_output_sidecar_json(self, original_basename, final_merged_path, master_meta_filepath, master_meta, was_segments, merge_successful):
         json_path, json_content = None, {}
-        output_suffix_val = self.merge_output_suffix_var.get() # Get suffix for consistency if needed
+        output_suffix_val = self.merge_output_suffix_var.get()
 
         if was_segments:
             if merge_successful and final_merged_path and not final_merged_path.startswith("N/A"):
                 out_fmt_selected = self.merge_output_format_var.get()
                 
-                # The final_output_path is the actual path, extension is part of it.
-                # The final_output_format should reflect the selection.
                 json_content = {
                     "source_video_basename": original_basename, "processing_mode": "segmented_then_merged",
                     "final_output_path": os.path.abspath(final_merged_path), 
@@ -853,9 +792,9 @@ class DepthCrafterGUI:
                     json_path = os.path.join(os.path.dirname(final_merged_path.rstrip(os.sep)), f"{os.path.basename(final_merged_path.rstrip(os.sep))}.json")
                 elif os.path.isfile(final_merged_path):
                     json_path = get_sidecar_json_filename(final_merged_path)
-                else: global_log_message("GUI_FINAL_JSON_PATH_DETERMINE_ERROR_MERGED", basename=original_basename, path=final_merged_path) 
-            else: global_log_message("GUI_FINAL_JSON_SKIPPED_MERGE_FAIL", basename=original_basename) 
-        else: # Full video (output_suffix doesn't apply here, _depth is hardcoded in get_full_video_output_filename)
+                else: _logger.warning(f"    Cannot determine final JSON path for merged {original_basename} (output path: {final_merged_path}).") 
+            else: _logger.info(f"  Skipping final JSON for merged {original_basename} (merge not successful/path invalid).") 
+        else:
             if master_meta and master_meta.get("jobs_info"):
                 job_info = master_meta["jobs_info"][0]
                 relative_output_filename = job_info.get("output_video_filename") 
@@ -866,7 +805,7 @@ class DepthCrafterGUI:
                     json_content = {
                         "source_video_basename": original_basename, "processing_mode": "full_video",
                         "final_output_path": os.path.abspath(out_path), 
-                        "final_output_format": out_fmt_from_ext, # Actual format from extension
+                        "final_output_format": out_fmt_from_ext,
                         "global_processing_settings": master_meta.get("global_processing_settings"),
                         "job_specific_details": job_info,
                         "generation_timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -875,74 +814,63 @@ class DepthCrafterGUI:
                          json_path = os.path.join(os.path.dirname(out_path.rstrip(os.sep)), f"{os.path.basename(out_path.rstrip(os.sep))}.json")
                     elif os.path.isfile(out_path):
                         json_path = get_sidecar_json_filename(out_path)
-                    else: global_log_message("GUI_FINAL_JSON_PATH_DETERMINE_ERROR_FULL", basename=original_basename, path=out_path) 
-                else: global_log_message("GUI_FINAL_JSON_SKIPPED_FULL_NO_PATH_INFO", basename=original_basename) 
-            else: global_log_message("GUI_FINAL_JSON_SKIPPED_FULL_NO_MASTER_META", basename=original_basename) 
+                    else: _logger.warning(f"    Cannot determine final JSON path for full video {original_basename} (output path: {out_path}).") 
+                else: _logger.warning(f"  Skipping final JSON for full video {original_basename} (output path/format missing from job_info).") 
+            else: _logger.warning(f"  Skipping final JSON for full video {original_basename} (master_meta or job_info missing).") 
 
         if json_path and json_content:
-            global_log_message("GUI_FINAL_JSON_SAVE_ATTEMPT", path=json_path) 
+            _logger.debug(f"    Attempting to save final output JSON to: {json_path}") 
             if save_json_file(json_content, json_path): 
-                global_log_message("GUI_FINAL_JSON_SAVE_SUCCESS", path=json_path) 
+                _logger.debug(f"  Successfully saved sidecar JSON for final output: {json_path}") 
         elif self.save_final_output_json_var.get():
             mode = "merged" if was_segments else "full video"
-            global_log_message("GUI_FINAL_JSON_NOT_CREATED_WARN", mode=mode, basename=original_basename)
+            _logger.warning(f"  Final output JSON for {mode} '{original_basename}' not created (conditions not met, or save failed).")
 
     def _cleanup_segment_folder(self, segment_subfolder_path, original_basename, master_meta):
         del_folder = False
         if not self.keep_intermediate_npz_var.get():
-            global_log_message("GUI_CLEANUP_SEG_FOLDER_NO_KEEP_NPZ", basename=original_basename) # New ID
+            _logger.info(f"Deleting intermediate segment subfolder for {original_basename} (Keep NPZ unchecked)...")
             del_folder = True
         else:
             min_frames = self.min_frames_to_keep_npz_var.get()
             if min_frames > 0:
                 orig_frames = master_meta.get("original_video_details", {}).get("raw_frame_count", 0)
                 if orig_frames < min_frames:
-                    global_log_message("GUI_CLEANUP_SEG_FOLDER_THRESHOLD_NOT_MET", basename=original_basename, frames=orig_frames, threshold=min_frames) # New ID
+                    _logger.info(f"  Video frames ({orig_frames}) < threshold ({min_frames}). Deleting segment folder for {original_basename} despite 'Keep NPZ'.")
                     del_folder = True
                 else:
-                    global_log_message("GUI_CLEANUP_SEG_FOLDER_THRESHOLD_MET_KEPT", basename=original_basename, frames=orig_frames, threshold=min_frames) # New ID
+                    _logger.info(f"  Video frames ({orig_frames}) >= threshold ({min_frames}). Segment folder for {original_basename} will be kept.")
             else:
-                global_log_message("GUI_CLEANUP_SEG_FOLDER_KEPT_NO_THRESHOLD", basename=original_basename) # New ID
+                _logger.info(f"Keeping intermediate NPZ files for {original_basename} (Keep NPZ checked, no positive frame threshold).")
         if del_folder:
             if os.path.exists(segment_subfolder_path):
                 try: 
                     shutil.rmtree(segment_subfolder_path)
-                    global_log_message("GUI_CLEANUP_SEG_FOLDER_DELETE_SUCCESS", basename=original_basename) # New ID
+                    _logger.info(f"  Successfully deleted segment subfolder for {original_basename}.")
                 except Exception as e:
-                    global_log_message("GUI_CLEANUP_SEG_FOLDER_DELETE_ERROR", path=segment_subfolder_path, error=str(e)) # New ID
+                    _logger.error(f"  Error deleting segment subfolder {segment_subfolder_path}: {e}")
             else:
-                global_log_message("GUI_CLEANUP_SEG_FOLDER_NOT_FOUND_WARN", path=segment_subfolder_path) # New ID
+                _logger.warning(f"  Segment subfolder not found for deletion: {segment_subfolder_path}")
         else:
-            global_log_message("GUI_CLEANUP_SEG_FOLDER_KEPT_INFO", path=segment_subfolder_path) # New ID
+            _logger.info(f"Keeping intermediate NPZ files and _master_meta.json in {segment_subfolder_path}")
 
     def create_widgets(self):
-        # ... (widget creation mostly unchanged, ensure no direct log calls) ...
-        # Call to update GUI verbosity after combo box for it is created, if it exists
-        if hasattr(self, 'combo_merge_verbosity'): # Assuming this is the Tk var for merge_script_gui_silence_level_var
-            self.combo_merge_verbosity.bind("<<ComboboxSelected>>", self._update_gui_verbosity_from_combobox)
-        # ... (rest of create_widgets)
-        if not hasattr(self, 'widgets_to_disable_during_processing'):
-            self.widgets_to_disable_during_processing = []
-        gui_verbosity_options = [
-            "Verbose (Detail)", 
-            "Normal (Info)", 
-            "Less Verbose (Warnings)", 
-            "Silent (Errors Only)"
-            # "Developer (Debug)" # Optional
-        ]
-
-        dir_frame = tk.LabelFrame(self.root, text="Input Source") # Renamed frame
+        # Removed self.widgets_to_disable_during_processing initialization, it's done below
+        self.widgets_to_disable_during_processing = []
+        # Removed gui_verbosity_options
+        
+        dir_frame = tk.LabelFrame(self.root, text="Input Source")
         dir_frame.pack(fill="x", padx=10, pady=5, expand=False)        
         tk.Label(dir_frame, text="Input Folder/File:").grid(row=0, column=0, sticky="e", padx=5, pady=2)
-        self.entry_input_dir_or_file = tk.Entry(dir_frame, textvariable=self.input_dir_or_file_var, width=50) # Use new var
+        self.entry_input_dir_or_file = tk.Entry(dir_frame, textvariable=self.input_dir_or_file_var, width=50)
         self.entry_input_dir_or_file.grid(row=0, column=1, padx=5, pady=2, sticky="ew")        
         browse_buttons_frame = tk.Frame(dir_frame)
         browse_buttons_frame.grid(row=0, column=2, padx=5, pady=0, sticky="w")
         self.browse_input_folder_btn = tk.Button(browse_buttons_frame, text="Browse Folder", command=self.browse_input_folder)
         self.browse_input_folder_btn.pack(side=tk.LEFT, padx=(0,2))        
-        self.browse_single_file_btn = tk.Button(browse_buttons_frame, text="Load Single File", command=self.browse_single_input_file) # New button
+        self.browse_single_file_btn = tk.Button(browse_buttons_frame, text="Load Single File", command=self.browse_single_input_file)
         self.browse_single_file_btn.pack(side=tk.LEFT, padx=(2,0))
-        dir_frame.columnconfigure(1, weight=1) # Allow entry to expand
+        dir_frame.columnconfigure(1, weight=1)
         self.widgets_to_disable_during_processing.extend([self.entry_input_dir_or_file, self.browse_input_folder_btn, self.browse_single_file_btn])
 
         tk.Label(dir_frame, text="Output Folder:").grid(row=1, column=0, sticky="e", padx=5, pady=2)
@@ -1026,13 +954,13 @@ class DepthCrafterGUI:
         hl_sif = self._add_manual_help_icon(merge_opts_frame, "segment_visual_format", row_idx, 2, sticky="w", padx=(0,5))
         self.keep_npz_dependent_widgets.extend([self.lbl_intermediate_fmt, self.combo_intermediate_fmt, hl_sif])
         self.widgets_to_disable_during_processing.extend([self.lbl_intermediate_fmt, self.combo_intermediate_fmt, hl_sif]); row_idx += 1
-        self.toggle_keep_npz_dependent_options_state() # Call after creation
+        self.toggle_keep_npz_dependent_options_state()
 
         # Dithering, Gamma, Percentile Norm options remain the same, ensure row_idx continues correctly
         self.merge_dither_cb = tk.Checkbutton(merge_opts_frame, text="Dithering (MP4)", variable=self.merge_dither_var, command=self.toggle_dither_options_active_state)
         self.merge_dither_cb.grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
         dither_details_frame = tk.Frame(merge_opts_frame)
-        dither_details_frame.grid(row=row_idx, column=1, sticky="w", padx=(0,0)) # Ensure it doesn't span too far
+        dither_details_frame.grid(row=row_idx, column=1, sticky="w", padx=(0,0))
         self.lbl_dither_str = tk.Label(dither_details_frame, text="Strength:")
         self.lbl_dither_str.pack(side=tk.LEFT, padx=(0, 2))
         self.entry_dither_str = tk.Entry(dither_details_frame, textvariable=self.merge_dither_strength_var, width=7)
@@ -1071,10 +999,10 @@ class DepthCrafterGUI:
         self.lbl_high_perc.pack(side=tk.LEFT, padx=(0,2))
         self.entry_high_perc = tk.Entry(low_high_frame, textvariable=self.merge_norm_high_perc_var, width=7)
         self.entry_high_perc.pack(side=tk.LEFT, padx=(0,0))
-        tk.Label(merge_opts_frame, text="  ↳").grid(row=row_idx, column=0, sticky="e", padx=(20,2)) # Aligns with the checkbox
-        self.merge_related_widgets_references.append((low_high_frame,)) # Note: only the frame is added here for simplicity. The sub-widgets are handled by parent state.
+        tk.Label(merge_opts_frame, text="  ↳").grid(row=row_idx, column=0, sticky="e", padx=(20,2))
+        self.merge_related_widgets_references.append((low_high_frame,))
         self.widgets_to_disable_during_processing.extend([self.lbl_low_perc, self.entry_low_perc, self.lbl_high_perc, self.entry_high_perc]); row_idx += 1
-        self.toggle_percentile_norm_options_active_state() # Call after creation
+        self.toggle_percentile_norm_options_active_state()
 
         # Alignment Method (Moved Output Format below this)
         lbl_merge_alignment = tk.Label(merge_opts_frame, text="Alignment Method:")
@@ -1098,27 +1026,20 @@ class DepthCrafterGUI:
         # New: Output Suffix
         lbl_merge_suffix = tk.Label(merge_opts_frame, text="Output Suffix:")
         lbl_merge_suffix.grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
-        self.entry_merge_suffix = tk.Entry(merge_opts_frame, textvariable=self.merge_output_suffix_var, width=18) # Match combobox width
+        self.entry_merge_suffix = tk.Entry(merge_opts_frame, textvariable=self.merge_output_suffix_var, width=18)
         self.entry_merge_suffix.grid(row=row_idx, column=1, padx=(0,2), pady=2, sticky="w")
         hl_mos = self._add_manual_help_icon(merge_opts_frame, "merge_output_suffix", row_idx, 2, sticky="w", padx=(0,5))
         self.merge_related_widgets_references.append((lbl_merge_suffix, self.entry_merge_suffix, hl_mos))
         self.widgets_to_disable_during_processing.extend([lbl_merge_suffix, self.entry_merge_suffix, hl_mos]); row_idx += 1
         
-        # Merge Log Verbosity (remains last in this frame)
-        lbl_merge_verbosity = tk.Label(merge_opts_frame, text="Merge Log Verbosity:")
-        lbl_merge_verbosity.grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
-        self.combo_merge_verbosity = ttk.Combobox(
-            merge_opts_frame, 
-            textvariable=self.merge_script_gui_silence_level_var, 
-            values=gui_verbosity_options, 
-            width=25, 
-            state="readonly"
-        )
-        self.combo_merge_verbosity.grid(row=row_idx, column=1, padx=(0,2), pady=2, sticky="w")
-        self.combo_merge_verbosity.bind("<<ComboboxSelected>>", self._update_gui_verbosity_from_combobox)
-        hl_mlv = self._add_manual_help_icon(merge_opts_frame, "merge_log_verbosity", row_idx, 2, sticky="w", padx=(0,5))
-        self.merge_related_widgets_references.append((lbl_merge_verbosity, self.combo_merge_verbosity, hl_mlv))
-        self.widgets_to_disable_during_processing.extend([lbl_merge_verbosity, self.combo_merge_verbosity, hl_mlv]); row_idx += 1
+        # Removed Merge Log Verbosity (was the last item in this frame)
+        # lbl_merge_verbosity = tk.Label(merge_opts_frame, text="Merge Log Verbosity:")
+        # lbl_merge_verbosity.grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        # self.combo_merge_verbosity = ttk.Combobox(...)
+        # self.combo_merge_verbosity.bind("<<ComboboxSelected>>", self._update_gui_verbosity_from_combobox)
+        # hl_mlv = self._add_manual_help_icon(...)
+        # self.merge_related_widgets_references.append((lbl_merge_verbosity, self.combo_merge_verbosity, hl_mlv))
+        # self.widgets_to_disable_during_processing.extend([lbl_merge_verbosity, self.combo_merge_verbosity, hl_mlv]); row_idx += 1
         
         progress_bar_frame = tk.Frame(self.root)
         progress_bar_frame.pack(pady=(10, 0), padx=10, fill="x", expand=False)
@@ -1150,32 +1071,28 @@ class DepthCrafterGUI:
         hl_gvb.bind("<Button-1>", lambda e, key="generate_visuals_button": self._show_help_for(key))
         hl_gvb.pack(side=tk.LEFT, padx=(1,0))
 
-        self.clear_log_button = tk.Button(ctrl_frame, text="Clear Log", command=self._clear_log, width=10)
-        self.clear_log_button.pack(side=tk.RIGHT, padx=(5,0))
+        # Removed clear log button and log_frame
+        # self.clear_log_button = tk.Button(ctrl_frame, text="Clear Log", command=self._clear_log, width=10)
+        # self.clear_log_button.pack(side=tk.RIGHT, padx=(5,0))
 
         self.widgets_to_disable_during_processing.extend([
             self.start_button, self.remerge_button, hl_rmb,
-            self.generate_visuals_button, hl_gvb, self.clear_log_button
+            self.generate_visuals_button, hl_gvb #, self.clear_log_button # Removed clear_log_button
         ])
 
-        log_frame = tk.LabelFrame(self.root, text="Log")
-        log_frame.pack(fill="both", expand=True, padx=10, pady=5)
-        self.log = tk.Text(log_frame, state="disabled", height=10, wrap=tk.WORD)
-        log_scroll = tk.Scrollbar(log_frame, command=self.log.yview)
-        self.log.config(yscrollcommand=log_scroll.set)
-        log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        self.log.pack(side=tk.LEFT, fill="both", expand=True)
+        # Removed log_frame and its contents
+        # log_frame = tk.LabelFrame(self.root, text="Log")
+        # log_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        # self.log = tk.Text(log_frame, state="disabled", height=10, wrap=tk.WORD)
+        # log_scroll = tk.Scrollbar(log_frame, command=self.log.yview)
+        # self.log.config(yscrollcommand=log_scroll.set)
+        # log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        # self.log.pack(side=tk.LEFT, fill="both", expand=True)
         self.toggle_merge_related_options_active_state()
 
-    def _clear_log(self):
-        if messagebox.askyesno("Clear Log", "Are you sure you want to clear the log?"):
-            self.log.config(state="normal")
-            self.log.delete(1.0, tk.END)
-            self.log.config(state="disabled")
-            global_log_message("GUI_LOG_CLEARED") # Use existing ID
+    # Removed _clear_log
 
     def _set_ui_processing_state(self, is_processing: bool):
-        # ... (unchanged) ...
         new_state = tk.DISABLED if is_processing else tk.NORMAL
         cancel_state = tk.NORMAL if is_processing else tk.DISABLED
         unique_widgets = list(set(self.widgets_to_disable_during_processing))
@@ -1200,7 +1117,6 @@ class DepthCrafterGUI:
 
         self.toggle_merge_related_options_active_state()
 
-    # ... (toggle_*_options_active_state methods unchanged) ...
     def toggle_keep_npz_dependent_options_state(self, *args):
         if not (hasattr(self, 'process_as_segments_var') and hasattr(self, 'keep_intermediate_npz_var') and hasattr(self, 'keep_npz_dependent_widgets')):
             return
@@ -1279,28 +1195,24 @@ class DepthCrafterGUI:
         self.toggle_percentile_norm_options_active_state()
 
     def add_param(self, parent, label, var, row):
-        # ... (unchanged) ...
         tk.Label(parent, text=label).grid(row=row, column=0, sticky="e", padx=5, pady=2)
         entry = tk.Entry(parent, textvariable=var, width=20)
         entry.grid(row=row, column=1, padx=5, pady=2, sticky="w")
         return entry
 
-    def browse_input_folder(self): # Renamed from browse_input
+    def browse_input_folder(self):
         folder = filedialog.askdirectory(initialdir=self.input_dir_or_file_var.get())
         if folder:
             self.input_dir_or_file_var.set(os.path.normpath(folder))
             self.single_file_mode_active = False
-            # Heuristic to check if selected folder is an image sequence itself
             if self._is_image_sequence_folder(folder):
                 self.current_input_mode = "image_sequence_folder"
-                global_log_message("GUI_INPUT_MODE_SET_IMG_SEQ_FOLDER", path=folder)
+                _logger.info(f"GUI: Input mode set to Image Sequence Folder: {folder}")
             else:
                 self.current_input_mode = "batch_folder"
-                global_log_message("GUI_INPUT_MODE_SET_BATCH_FOLDER", path=folder)
-            # Make sure output dir is not inside input dir if it's a general batch folder
-            # (This is advanced validation, can be added later)
+                _logger.info(f"GUI: Input mode set to Batch Folder: {folder}")
 
-    def browse_single_input_file(self): # New method
+    def browse_single_input_file(self):
         filetypes = [("All Supported", "*.mp4 *.avi *.mov *.mkv *.webm *.flv *.gif *.png *.jpg *.jpeg *.bmp *.tiff *.exr"),
                      ("Video files", "*.mp4 *.avi *.mov *.mkv *.webm *.flv *.gif"),
                      ("Image files", "*.png *.jpg *.jpeg *.bmp *.tiff *.exr")]
@@ -1320,13 +1232,12 @@ class DepthCrafterGUI:
 
             if is_video:
                 self.current_input_mode = "single_video_file"
-                global_log_message("GUI_INPUT_MODE_SET_SINGLE_VIDEO", path=filepath)
+                _logger.info(f"GUI: Input mode set to Single Video File: {filepath}")
             elif is_image:
                 self.current_input_mode = "single_image_file"
-                global_log_message("GUI_INPUT_MODE_SET_SINGLE_IMAGE", path=filepath)
+                _logger.info(f"GUI: Input mode set to Single Image File: {filepath}")
             else:
-                global_log_message("GUI_INPUT_MODE_UNKNOWN_SINGLE_FILE_WARN", path=filepath)
-                # Default to treating as video, or show error
+                _logger.warning(f"GUI: Could not determine type of single file: {filepath}. Assuming video.")
                 self.current_input_mode = "single_video_file" 
                 messagebox.showwarning("Unknown File Type", f"Could not determine if '{os.path.basename(filepath)}' is a video or image. Assuming video.")
 
@@ -1342,7 +1253,7 @@ class DepthCrafterGUI:
             item_path = os.path.join(folder_path, item)
             if os.path.isdir(item_path):
                 sub_dirs_count += 1
-                continue # Don't check sub-sub-dirs for this simple heuristic
+                continue
             
             ext = os.path.splitext(item)[1].lower()
             if any(ext in img_ext.replace("*", "") for img_ext in self.IMAGE_EXTENSIONS):
@@ -1350,90 +1261,65 @@ class DepthCrafterGUI:
             elif any(ext in vid_ext.replace("*", "") for vid_ext in self.VIDEO_EXTENSIONS):
                 video_files_count +=1
         
-        # Heuristic: many images, no videos, no sub-directories
         return image_files_count > 5 and video_files_count == 0 and sub_dirs_count == 0
 
-    def browse_output(self): # Unchanged
+    def browse_output(self):
         folder = filedialog.askdirectory(initialdir=self.output_dir.get())
         if folder: self.output_dir.set(os.path.normpath(folder))
 
-    # Old log_message removed, replaced by _queue_message_for_gui_log used as callback
+    # Removed process_queue
     def process_queue(self):
-        gui_log_updated_this_cycle = False
+        # The message queue is still used for progress bar updates
         while not self.message_queue.empty():
             try:
                 msg_type, content = self.message_queue.get_nowait()
-                
-                # Make the debug print safer
-                content_for_debug_print = str(content) # Convert to string first
-
-                if msg_type == "log_display":
-                    # Ensure content is a string before inserting for safety, though it should be.
-                    if not isinstance(content, str):
-                        # This would be an unexpected error if _queue_message_for_gui_log is correct
-                        content = str(content) # Convert to string as a fallback
-
-                    self.log.config(state="normal")
-                    self.log.insert("end", f"{content}\n") 
-                    self.log.config(state="disabled")
-                    self.log.see("end")
-                    gui_log_updated_this_cycle = True 
-                elif msg_type == "progress":
-                    self.progress["value"] = content # content is an int here
+                if msg_type == "progress":
+                    self.progress["value"] = content
                 elif msg_type == "set_ui_state":
-                    self._set_ui_processing_state(content) # content is a bool here
+                    self._set_ui_processing_state(content)
             except queue.Empty:
                 break
             except Exception as e:
-                # This will catch the TypeError now if the above fix isn't enough, or other errors
-                import traceback
-                # print(traceback.format_exc()) # Print full traceback for errors within process_queue
+                _logger.exception(f"Error processing GUI queue: {e}")
         
-        self.root.after(100, self.process_queue)
+        self.root.after(100, self.process_queue) # Still schedule, but only for progress/UI state
 
     def stop_processing(self):
         if self.processing_thread and self.processing_thread.is_alive():
-            global_log_message("GUI_CANCEL_REQUEST") # Using existing ID
+            _logger.info("Cancel request received. Processing will stop after current item.")
             self.stop_event.set()
         else: 
-            global_log_message("GUI_NO_PROCESSING_TO_CANCEL_INFO") # New ID
+            _logger.info("No processing is currently active to cancel.")
 
     def start_thread(self):
         if self.processing_thread and self.processing_thread.is_alive():
-            global_log_message("GUI_PROCESSING_ALREADY_RUNNING_WARN")
+            _logger.warning("Processing is already running.")
             return
 
         input_path_str = self.input_dir_or_file_var.get()
         if not input_path_str or not os.path.exists(input_path_str):
-            global_log_message("GUI_INPUT_PATH_EMPTY_ERROR")
+            _logger.error(f"GUI: Input path field is empty or path does not exist: {input_path_str}")
             messagebox.showerror("Error", f"Input path does not exist: {input_path_str}")
             return
         
-        # === Add path analysis here ===
-        # Re-determine mode based on the current text in the input field
-        # This makes it robust to typed paths or loaded configs where browse buttons weren't the last action.
         determined_mode, determined_single_source = self._determine_input_mode_from_path(input_path_str)
         
-        # Update the GUI's state based on this fresh determination
         self.current_input_mode = determined_mode
         self.single_file_mode_active = determined_single_source
-        # === End of added path analysis ===
 
-
-        if not os.path.exists(input_path_str): # Check existence *after* trying to determine mode (as _determine... also checks)
-            global_log_message("GUI_INPUT_PATH_INVALID_ERROR", path=input_path_str)
+        if not os.path.exists(input_path_str):
+            _logger.error(f"GUI: Input path is invalid or does not exist: {input_path_str}")
             messagebox.showerror("Error", f"Input path does not exist: {input_path_str}")
             return
 
-        sources_to_process_specs = [] # List of dicts: {"path": str, "type": str, "basename": str}
+        sources_to_process_specs = []
 
-        if self.single_file_mode_active: # Now this flag is reliably set
+        if self.single_file_mode_active:
             self.effective_move_original_on_completion = False
             basename = ""
-            # For image_sequence_folder, basename is folder name. For files, it's filename without ext.
             if self.current_input_mode == "image_sequence_folder":
                 basename = os.path.basename(input_path_str)
-            else: # single_video_file or single_image_file
+            else:
                 basename = os.path.splitext(os.path.basename(input_path_str))[0]
             
             sources_to_process_specs.append({
@@ -1441,21 +1327,19 @@ class DepthCrafterGUI:
                 "type": self.current_input_mode, 
                 "basename": basename
             })
-        else: # Batch folder mode (self.current_input_mode will be "batch_folder")
+        else:
             self.effective_move_original_on_completion = self.MOVE_ORIGINAL_TO_FINISHED_FOLDER_ON_COMPLETION
-            if self.current_input_mode == "batch_folder": # Explicit check
-                # Scan the batch folder for videos and image sequence subfolders
+            if self.current_input_mode == "batch_folder":
                 try:
                     for item_name in os.listdir(input_path_str):
                         item_full_path = os.path.join(input_path_str, item_name)
-                        # ... (rest of the batch folder scanning logic from previous version)
                         if os.path.isfile(item_full_path):
                             ext = os.path.splitext(item_name)[1].lower()
                             if any(ext in vid_ext.replace("*", "") for vid_ext in self.VIDEO_EXTENSIONS):
                                 basename = os.path.splitext(item_name)[0]
                                 sources_to_process_specs.append({
                                     "path": item_full_path,
-                                    "type": "video_file", # When found in batch, it's a standard video_file
+                                    "type": "video_file",
                                     "basename": basename
                                 })
                         elif os.path.isdir(item_full_path):
@@ -1466,22 +1350,22 @@ class DepthCrafterGUI:
                                     "type": "image_sequence_folder",
                                     "basename": basename
                                 })
-                except NotADirectoryError: # Should be caught by _determine_input_mode_from_path if path was invalid
-                    global_log_message("GUI_INPUT_PATH_NOT_DIR_FOR_BATCH_ERROR", path=input_path_str)
+                except NotADirectoryError:
+                    _logger.error(f"GUI Input: Path '{input_path_str}' is not a directory, but batch processing mode was attempted.")
                     messagebox.showerror("Error", f"Input path is not a directory for batch processing: {input_path_str}")
                     return
-                except OSError as e: # Catch other potential OS errors from listdir
-                    global_log_message("GUI_LISTDIR_OS_ERROR", path=input_path_str, error=str(e))
+                except OSError as e:
+                    _logger.error(f"GUI Input: OS error when trying to list directory '{input_path_str}'. Error: {e}")
                     messagebox.showerror("Error", f"Could not read directory contents for '{input_path_str}':\n{e}")
                     return
-            else: # Should not happen if _determine_input_mode_from_path is correct
-                global_log_message("GUI_START_THREAD_UNEXPECTED_MODE_AFTER_DETERMINATION", mode=self.current_input_mode, path=input_path_str)
+            else:
+                _logger.critical(f"GUI Start Thread: Unexpected mode '{self.current_input_mode}' for path '{input_path_str}' after explicit determination. This indicates a logic error.")
                 messagebox.showerror("Internal Error", f"Unexpected input mode '{self.current_input_mode}' for path '{input_path_str}'. Please report this.")
                 return
 
 
         if not sources_to_process_specs:
-            global_log_message("GUI_NO_VALID_SOURCES_FOUND", path_scanned=input_path_str, mode=self.current_input_mode)
+            _logger.warning(f"GUI: No valid video files or image sequences found in '{input_path_str}' for mode '{self.current_input_mode}'.")
             return
         
         final_jobs_to_process = []
@@ -1498,18 +1382,15 @@ class DepthCrafterGUI:
             base_name = source_spec["basename"]
 
             source_type_for_define = ""
-            # ... (mapping current_gui_mode to source_type_for_define) ...
             if current_gui_mode == "single_video_file" or current_gui_mode == "video_file":
                 source_type_for_define = "video_file"
             elif current_gui_mode == "image_sequence_folder":
                 source_type_for_define = "image_sequence_folder"
             elif current_gui_mode == "single_image_file":
                 source_type_for_define = "single_image_file"
-            # ...
-
-            # num_frames_for_single_img_param = -1 # Default for define_video_segments
-            # if source_type_for_define == "single_image_file":
-            #     num_frames_for_single_img_param = DepthCrafterGUI.DEFAULT_SINGLE_IMAGE_FRAME_COUNT # Use the class attribute
+            else:
+                _logger.error(f"GUI Start Thread: Unknown source_spec type '{current_gui_mode}' for basename '{base_name}'. Cannot map to define_video_segments source type.")
+                continue
 
             all_potential_segments_for_video, base_job_info_initial = define_video_segments(
                 video_path_or_folder=source_path,
@@ -1518,19 +1399,19 @@ class DepthCrafterGUI:
                 gui_process_length_overall=gui_len_setting,
                 gui_segment_output_window_frames=gui_win_setting,
                 gui_segment_output_overlap_frames=gui_ov_setting,
-                source_type=source_type_for_define, # The mapped type for define_video_segments internal logic
+                source_type=source_type_for_define,
             )
 
             if not base_job_info_initial:
-                global_log_message("PROCESSING_SKIPPED", item_name=base_name, reason="Issues in segment definition (metadata error).")
+                _logger.info(f"Skipping {base_name}: Issues in segment definition (metadata error).")
                 continue
             
-            base_job_info_map_for_run[source_path] = base_job_info_initial.copy() # Keyed by actual source path
+            base_job_info_map_for_run[source_path] = base_job_info_initial.copy()
 
             if self.process_as_segments_var.get():
                 if not all_potential_segments_for_video:
                     reason_skip = "Too short or invalid overlap/settings" if base_job_info_initial.get("original_video_raw_frame_count", 0) > 0 else "Source issue or zero frames/duration"
-                    global_log_message("GUI_NO_SEGMENTS_DEFINED_SKIP", basename=base_name, reason=reason_skip)
+                    _logger.info(f"GUI: No segments defined by settings for {base_name} (Reason: {reason_skip}). Skipping processing for this video.")
                     continue
 
                 segment_subfolder_name = get_segment_output_folder_name(base_name)
@@ -1539,30 +1420,24 @@ class DepthCrafterGUI:
                 
                 segments_for_this_video, action_taken = self._get_segments_to_resume_or_overwrite(
                     source_path, base_name, segment_subfolder_path, all_potential_segments_for_video,
-                    current_video_base_info_ref # This ref will be updated with pre_existing_successful_jobs
+                    current_video_base_info_ref
                 )
-                global_log_message("GUI_RESUME_ACTION", video_name=base_name, action_taken=action_taken, num_segments=len(segments_for_this_video))
+                _logger.info(f"For video '{base_name}': Action '{action_taken}', {len(segments_for_this_video)} segments will be processed.")
                 if segments_for_this_video:
-                    final_jobs_to_process.extend(segments_for_this_video) # these jobs now contain full base_job_info
+                    final_jobs_to_process.extend(segments_for_this_video)
             
-            else: # Full "video" processing (could be actual video, sequence, or single image made into clip)
-                # Output path check for full processing
-                # The actual extension depends on the source. For now, assume mp4 for this check.
-                # get_full_video_output_filename is generic.
+            else:
                 full_out_check_path = os.path.join(self.output_dir.get(), get_full_video_output_filename(base_name, "mp4"))
                 proceed_full = True
-                if os.path.exists(full_out_check_path): # Simplified check, might need to be smarter based on source type
+                if os.path.exists(full_out_check_path):
                     if not messagebox.askyesno("Overwrite?", f"An output file for '{base_name}' might exist (e.g., MP4):\n{full_out_check_path}\n\nOverwrite if it exists?"):
-                        global_log_message("GUI_FULL_VIDEO_SKIP_NO_OVERWRITE", basename=base_name)
+                        _logger.info(f"Skipping {base_name} (full video processing, user chose not to overwrite).")
                         proceed_full = False
                 
                 if proceed_full:
-                    # Construct a single job representing the "full" processing of the source
-                    # This job needs all info from base_job_info_initial
                     full_source_job = {
-                        **base_job_info_initial, # Contains path, type, basename, fps, frame_count, gui_fps_setting
+                        **base_job_info_initial,
                         "is_segment": False,
-                        # These GUI settings are for reference if needed by backend, though backend uses its own params for full run
                         "gui_desired_output_window_frames": gui_win_setting, 
                         "gui_desired_output_overlap_frames": gui_ov_setting 
                     }
@@ -1574,8 +1449,9 @@ class DepthCrafterGUI:
                                                       args=(final_jobs_to_process, base_job_info_map_for_run), 
                                                       daemon=True)
             self.processing_thread.start()
+            self.root.after(100, self.process_queue) # Start queue processing for progress updates
         else:
-            global_log_message("GUI_NO_JOBS_TO_PROCESS_FINAL_INFO")
+            _logger.info("No videos/segments to process after considering existing data and user choices (or all skipped).")
 
     def _start_processing_wrapper(self, video_processing_jobs, base_job_info_map):
         try: 
@@ -1589,11 +1465,11 @@ class DepthCrafterGUI:
         Returns: (input_mode_str, is_single_source_bool)
         """
         if not path_str or not os.path.exists(path_str):
-            global_log_message("GUI_INPUT_PATH_INVALID_FOR_MODE_DETECT", path=path_str)
-            return "batch_folder", False # Default to batch if path is invalid
+            _logger.warning(f"GUI Input: Path '{path_str}' is invalid or does not exist. Cannot determine input mode accurately.")
+            return "batch_folder", False
 
         is_single_source = False
-        mode = "batch_folder" # Default
+        mode = "batch_folder"
 
         if os.path.isfile(path_str):
             is_single_source = True
@@ -1606,41 +1482,35 @@ class DepthCrafterGUI:
             elif is_image:
                 mode = "single_image_file"
             else:
-                # Unknown file type, treat as if it's a folder or log error
-                global_log_message("GUI_INPUT_MODE_UNKNOWN_TYPED_FILE_WARN", path=path_str)
-                mode = "batch_folder" # Fallback to prevent error, or could be an error state
-                is_single_source = False # Revert, as we can't process it as a single known file
+                _logger.warning(f"GUI Input: Typed path '{path_str}' is a file of unknown type. Treating as non-single source (batch fallback).")
+                mode = "batch_folder"
+                is_single_source = False
         elif os.path.isdir(path_str):
-            # If it's a directory, it could be a batch folder or an image sequence folder.
-            # The _is_image_sequence_folder heuristic is used.
             if self._is_image_sequence_folder(path_str):
                 mode = "image_sequence_folder"
-                is_single_source = True # An image sequence folder is treated as a single processing unit
+                is_single_source = True
             else:
                 mode = "batch_folder"
                 is_single_source = False
         else:
-            # Path exists but is not a file or directory (e.g., symlink to nowhere, etc.)
-            global_log_message("GUI_INPUT_PATH_NOT_FILE_OR_DIR_WARN", path=path_str)
-            mode = "batch_folder" # Default/fallback
+            _logger.warning(f"GUI Input: Path '{path_str}' exists but is not a regular file or directory.")
+            mode = "batch_folder"
             is_single_source = False
             
-        global_log_message("GUI_INPUT_MODE_DETERMINED", path=path_str, mode=mode, is_single=is_single_source)
+        _logger.debug(f"GUI Input: Determined mode for path '{path_str}' as '{mode}', is_single_source: {is_single_source}.")
         return mode, is_single_source
 
     def save_config(self):
-        config = self._collect_all_settings() # This should now get input_dir_or_file_var
+        config = self._collect_all_settings()
         config[self.LAST_SETTINGS_DIR_CONFIG_KEY] = self.last_settings_dir
         
-        # Add current_input_mode and single_file_mode_active to be saved
         config["current_input_mode"] = self.current_input_mode 
         config["single_file_mode_active"] = self.single_file_mode_active
         
         try:
             with open(self.CONFIG_FILENAME, "w") as f: json.dump(config, f, indent=4)
-            # No need to log here, GUI might be closing
         except Exception as e: 
-            print(f"Warning (GUI save_config): Could not save config: {e}")
+            _logger.warning(f"Warning (GUI save_config): Could not save config: {e}")
 
     def load_config(self):
         if os.path.exists(self.CONFIG_FILENAME):
@@ -1651,39 +1521,34 @@ class DepthCrafterGUI:
                     if key in self.all_tk_vars:
                         try: self.all_tk_vars[key].set(value)
                         except tk.TclError: 
-                            print(f"Warning (GUI load_config): Could not set var {key} during early config load.")
+                            _logger.warning(f"Warning (GUI load_config): Could not set var {key} during early config load.")
                 
                 self.last_settings_dir = config.get(self.LAST_SETTINGS_DIR_CONFIG_KEY, os.getcwd())
                 
-                # Load current_input_mode and single_file_mode_active
-                self.current_input_mode = config.get("current_input_mode", "batch_folder") # Default if not found
-                self.single_file_mode_active = config.get("single_file_mode_active", False) # Default if not found
+                self.current_input_mode = config.get("current_input_mode", "batch_folder")
+                self.single_file_mode_active = config.get("single_file_mode_active", False)
                 
-                # Update GUI verbosity from loaded config if applicable
-                set_gui_verbosity(self._get_mapped_gui_verbosity_level())
-                global_log_message("GUI_CONFIG_LOADED_INFO", filename=self.CONFIG_FILENAME) # Log after successful load
+                _logger.info(f"GUI: Configuration loaded from '{self.CONFIG_FILENAME}'.")
             except Exception as e:
-                print(f"Warning (GUI load_config): Could not load config '{self.CONFIG_FILENAME}': {e}")
-                # Set defaults if loading fails for these crucial state vars
+                _logger.warning(f"Warning (GUI load_config): Could not load config '{self.CONFIG_FILENAME}': {e}")
                 self.last_settings_dir = os.getcwd()
                 self.current_input_mode = "batch_folder"
                 self.single_file_mode_active = False
         else: 
             self.last_settings_dir = os.getcwd()
-            self.current_input_mode = "batch_folder" # Set defaults if no config file
+            self.current_input_mode = "batch_folder"
             self.single_file_mode_active = False
-            global_log_message("GUI_CONFIG_NOT_FOUND_INFO", filename=self.CONFIG_FILENAME)
+            _logger.info(f"GUI: Configuration file '{self.CONFIG_FILENAME}' not found. Using default settings.")
 
     def on_close(self):
         self.save_config()
         if self.processing_thread and self.processing_thread.is_alive():
-            global_log_message("GUI_STOPPING_ON_CLOSE_INFO") # New ID
+            _logger.info("Stopping processing before exit...")
             self.stop_event.set()
             self.processing_thread.join(timeout=10)
             if self.processing_thread.is_alive(): 
-                global_log_message("GUI_THREAD_FORCE_EXIT_WARN") # New ID
-        # Clean up message_catalog callback to prevent issues if app is somehow re-instantiated
-        set_gui_logger_callback(None)
+                _logger.warning("Processing thread did not terminate gracefully. Forcing exit.")
+        
         self.root.destroy()
 
     def re_merge_from_gui(self):
@@ -1693,16 +1558,16 @@ class DepthCrafterGUI:
         if not meta_file: return
         
         base_name_from_meta = os.path.splitext(os.path.basename(meta_file))[0].replace("_master_meta", "")
-        output_suffix = self.merge_output_suffix_var.get() # Get suffix
-        remerge_base_name = f"{base_name_from_meta}{output_suffix}" # Use suffix for base name
+        output_suffix = self.merge_output_suffix_var.get()
+        remerge_base_name = f"{base_name_from_meta}{output_suffix}"
 
         out_fmt = self.merge_output_format_var.get()
         
         def_ext_fmt = out_fmt
-        if out_fmt == "main10_mp4": # Covers "main10_mp4"
+        if out_fmt == "main10_mp4":
             def_ext_fmt = "mp4"
         elif out_fmt in ["png_sequence", "exr_sequence"]:
-            def_ext_fmt = "" # No extension for sequence folders
+            def_ext_fmt = ""
         elif out_fmt == "exr":
             def_ext_fmt = "exr"
 
@@ -1710,7 +1575,7 @@ class DepthCrafterGUI:
 
         ftypes_map = {
             "mp4": [("MP4 (H.264 8-bit)", "*.mp4")],
-            "main10_mp4": [("MP4 (HEVC 10-bit)", "*.mp4")], # New entry
+            "main10_mp4": [("MP4 (HEVC 10-bit)", "*.mp4")],
             "png_sequence": [("PNG Seq (Select Folder)", "")],
             "exr_sequence": [("EXR Seq (Select Folder)", "")],
             "exr": [("EXR File", "*.exr")]
@@ -1720,21 +1585,21 @@ class DepthCrafterGUI:
 
         if "sequence" in out_fmt:
             parent_dir = filedialog.askdirectory(title=f"Select Parent Dir for Re-Merged {out_fmt.upper()} Sequence...", initialdir=self.output_dir.get())
-            if parent_dir: out_path = parent_dir # merge_depth_segments will create subfolder using remerge_base_name
+            if parent_dir: out_path = parent_dir
         else:
-            # Construct the initial filename based on YOUR variables
             initial_filename_for_dialog_actual = f"{remerge_base_name}{def_ext}"
 
             out_path = filedialog.asksaveasfilename(
                 title=f"Save Re-Merged {out_fmt.upper()} As...", 
                 initialdir=self.output_dir.get(), 
-                initialfile=f"{remerge_base_name}{def_ext}", # Filename includes suffix
+                initialfile=f"{remerge_base_name}{def_ext}",
                 defaultextension=def_ext, 
                 filetypes=curr_ftypes
             )
 
         if not out_path: 
-            global_log_message("GUI_REMERGE_CANCELLED_NO_PATH"); return
+            _logger.info("Re-merge cancelled: No output path selected.")
+            return
             
         align_method = "linear_blend" if self.merge_alignment_method_var.get() == "Linear Blend" else "shift_scale"
         
@@ -1744,12 +1609,12 @@ class DepthCrafterGUI:
                 "use_percentile_norm": self.merge_percentile_norm_var.get(), "norm_low_percentile": self.merge_norm_low_perc_var.get(),
                 "norm_high_percentile": self.merge_norm_high_perc_var.get(), "output_format": out_fmt,
                 "merge_alignment_method": align_method,
-                "output_filename_override_base": remerge_base_name} # Pass the suffixed base name
+                "output_filename_override_base": remerge_base_name}
 
         if self.processing_thread and self.processing_thread.is_alive():
             messagebox.showwarning("Busy", "Another process is running. Please wait."); return
         
-        global_log_message("GUI_ACTION_STARTED", action_name="Re-Merge", target_name=os.path.basename(meta_file))
+        _logger.info(f"--- Starting Re-Merge for: {os.path.basename(meta_file)} ---")
         self._set_ui_processing_state(True)
         self.processing_thread = threading.Thread(target=self._execute_re_merge_wrapper, args=(args,), daemon=True); self.processing_thread.start()
 
@@ -1759,20 +1624,16 @@ class DepthCrafterGUI:
 
     def _execute_re_merge(self, remerge_args_dict):
         self.stop_event.clear(); self.progress["value"] = 0; self.progress["maximum"] = 1
-        # Logged by caller: GUI_ACTION_STARTED
         start_time = time.perf_counter()
         try:
             if merge_depth_segments:
-                # merge_depth_segments.set_gui_logger_callback removed
                 saved_path = merge_depth_segments.merge_depth_segments(**remerge_args_dict)
-                # merge_depth_segments logs its own success
-            else: global_log_message("MERGE_MODULE_UNAVAILABLE", video_name="N/A for re-merge action")
+            else: _logger.warning("Segment merging for N/A for re-merge action skipped: merge_depth_segments module not available.")
         except Exception as e:
-            global_log_message("GUI_REMERGE_EXEC_ERROR", error=str(e), traceback_info=sys.exc_info()) # New ID
+            _logger.exception(f"ERROR during re-merge execution: {e}")
         finally:
-            # merge_depth_segments.set_gui_logger_callback(None) removed
             duration = format_duration(time.perf_counter() - start_time)
-            global_log_message("GUI_ACTION_COMPLETE", action_name="Re-Merge", target_name=os.path.basename(remerge_args_dict['master_meta_path']), duration=duration)
+            _logger.info(f"--- Re-Merge for: {os.path.basename(remerge_args_dict['master_meta_path'])} finished in {duration}. ---")
             self.message_queue.put(("progress", 1))
 
     def generate_segment_visuals_from_gui(self):
@@ -1780,16 +1641,16 @@ class DepthCrafterGUI:
             messagebox.showwarning("Busy", "Another process is running. Please wait."); return
         meta_file = filedialog.askopenfilename(title="Select Master Metadata JSON for Segment Visual Generation", filetypes=[("JSON files", "*.json"), ("All files", "*.*")], initialdir=self.output_dir.get())
         if not meta_file: 
-            global_log_message("GUI_GEN_VISUALS_CANCELLED_NO_META") # New ID
+            _logger.info("Segment visual generation cancelled: No master metadata file selected.")
             return
         vis_fmt = self.keep_intermediate_segment_visual_format_var.get()
         if vis_fmt == "none": 
             messagebox.showinfo("Info", "Segment Visual Format is 'none'. Select a valid format."); return
         if not messagebox.askyesno("Generate/Overwrite Visuals?", f"Generate '{vis_fmt}' visuals for segments in '{os.path.basename(meta_file)}'?\nThis may overwrite existing visuals."):
-            global_log_message("GUI_GEN_VISUALS_CANCELLED_BY_USER") # New ID
+            _logger.info("Segment visual generation cancelled by user.")
             return
         args = {"master_meta_path": meta_file, "visual_format_to_generate": vis_fmt}
-        global_log_message("GUI_ACTION_STARTED", action_name="Segment Visual Generation", target_name=f"{os.path.basename(meta_file)} (Format: {vis_fmt})")
+        _logger.info(f"--- Starting Segment Visual Generation for: {os.path.basename(meta_file)} (Format: {vis_fmt}) ---")
         self._set_ui_processing_state(True)
         self.processing_thread = threading.Thread(target=self._execute_generate_segment_visuals_wrapper, args=(args,), daemon=True); self.processing_thread.start()
 
@@ -1808,7 +1669,7 @@ class DepthCrafterGUI:
         
         jobs = [j for j in meta_data.get("jobs_info", []) if j.get("status") == "success" and j.get("output_segment_filename")]
         if not jobs: 
-            global_log_message("GUI_GEN_VISUALS_NO_SUCCESSFUL_SEGS", master_file=os.path.basename(master_path)) 
+            _logger.warning(f"No successful segments with output filenames found in {os.path.basename(master_path)} for visual generation.")
             return
         self.progress["maximum"] = len(jobs)
         seg_folder_path = os.path.dirname(master_path)
@@ -1816,24 +1677,23 @@ class DepthCrafterGUI:
 
         for i, job_meta in enumerate(jobs):
             if self.stop_event.is_set(): 
-                global_log_message("GUI_GEN_VISUALS_CANCELLED_MID_PROCESS") 
+                _logger.info("Segment visual generation cancelled during processing.")
                 break
             seg_id, npz_name = job_meta.get("segment_id"), job_meta.get("output_segment_filename")
             npz_path = os.path.join(seg_folder_path, npz_name)
-            global_log_message("GUI_GEN_VISUALS_PROCESSING_SEGMENT", segment_id=seg_id + 1 if seg_id is not None else '?', 
-                               total_segments=len(jobs), npz_name=npz_name, format=vis_fmt) 
+            _logger.debug(f"  Visual Gen - Processing segment {seg_id + 1 if seg_id is not None else '?'}/{len(jobs)}: {npz_name} for {vis_fmt}") 
             
             if not os.path.exists(npz_path): 
-                global_log_message("FILE_NOT_FOUND", filepath=npz_path)
+                _logger.error(f"File not found: {npz_path}")
                 continue
             try:
                 with np.load(npz_path) as data:
                     if 'frames' not in data.files: 
-                        global_log_message("NPZ_LOAD_KEY_ERROR", key='frames', filepath=npz_name)
+                        _logger.error(f"Key 'frames' not found in NPZ: {npz_name}")
                         continue
                     raw_frames = data['frames']
                 if raw_frames.size == 0: 
-                    global_log_message("GUI_GEN_VISUALS_SEGMENT_EMPTY_WARN", npz_name=npz_name) 
+                    _logger.warning(f"    Visual Gen - WARNING: Segment {npz_name} is empty. Skipping.")
                     continue
                 
                 norm_frames = (raw_frames - raw_frames.min()) / (raw_frames.max() - raw_frames.min()) if raw_frames.max() != raw_frames.min() else np.zeros_like(raw_frames)
@@ -1843,13 +1703,12 @@ class DepthCrafterGUI:
                 fps = float(job_meta.get("processed_at_fps", meta_data.get("original_video_details", {}).get("original_fps", 30.0)))
                 if fps <= 0: fps = 30.0
 
-                if vis_fmt == "mp4" or vis_fmt == "main10_mp4": # Modified to handle main10_mp4
-                    # Pass vis_fmt as output_format to the util
+                if vis_fmt == "mp4" or vis_fmt == "main10_mp4":
                     save_path, save_err = save_depth_visual_as_mp4_util(
                         norm_frames, 
-                        os.path.join(seg_folder_path, f"{base_name_no_ext}_visual.mp4"), # Filename extension is still .mp4
+                        os.path.join(seg_folder_path, f"{base_name_no_ext}_visual.mp4"),
                         fps,
-                        output_format=vis_fmt # Pass "mp4" or "main10_mp4"
+                        output_format=vis_fmt
                     )
                 elif vis_fmt == "png_sequence":
                     save_path, save_err = save_depth_visual_as_png_sequence_util(norm_frames, seg_folder_path, base_name_no_ext)
@@ -1864,17 +1723,17 @@ class DepthCrafterGUI:
                     else: save_err = "OpenEXR module not available in GUI environment."
 
                 if save_path:
-                    global_log_message("GUI_GEN_VISUALS_SAVE_SUCCESS", path=save_path) 
+                    _logger.debug(f"    Visual Gen - Successfully saved visual: {save_path}") 
                     if seg_id is not None: updated_visual_paths[seg_id] = {"path": os.path.abspath(save_path), "format": vis_fmt}
                 if save_err: 
-                    global_log_message("GUI_GEN_VISUALS_SAVE_ERROR", npz_name=npz_name, error=save_err, format_requested=vis_fmt) 
+                    _logger.error(f"    Visual Gen - ERROR saving visual for {npz_name}: {save_err}, format requested: {vis_fmt}") 
             except Exception as e:
-                global_log_message("GUI_GEN_VISUALS_SEGMENT_PROCESSING_ERROR", npz_name=npz_name, error=str(e), traceback_info=sys.exc_info()) 
+                _logger.exception(f"    Visual Gen - ERROR processing segment {npz_name}: {e}") 
             self.message_queue.put(("progress", i + 1))
         
         if updated_visual_paths:
-            global_log_message("GUI_GEN_VISUALS_UPDATING_MASTER_META") # New ID
-            meta_content_update = load_json_file(master_path) # Util logs
+            _logger.info("Visual Gen - Updating master metadata with new visual paths...")
+            meta_content_update = load_json_file(master_path)
             if meta_content_update:
                 updated_count = 0
                 for job_entry in meta_content_update.get("jobs_info", []):
@@ -1884,35 +1743,23 @@ class DepthCrafterGUI:
                         job_entry["intermediate_visual_format_saved"] = updated_visual_paths[s_id]["format"]
                         updated_count +=1
                 if updated_count > 0:
-                    if save_json_file(meta_content_update, master_path, indent=4): # Util logs
-                         global_log_message("GUI_GEN_VISUALS_MASTER_META_UPDATE_SUCCESS", count=updated_count) # New ID
-                    # else save_json_file logs its own error
-                else: global_log_message("GUI_GEN_VISUALS_MASTER_META_NO_UPDATES_NEEDED") # New ID
-            # else: load_json_file logs its own error
+                    if save_json_file(meta_content_update, master_path, indent=4):
+                         _logger.info(f"Visual Gen - Master metadata updated for {updated_count} segments.")
+                else: _logger.info("Visual Gen - No segments in master metadata needed visual path updates.")
         
         duration = format_duration(time.perf_counter() - start_time)
-        global_log_message("GUI_ACTION_COMPLETE", action_name="Segment Visual Generation", 
-                           target_name=f"{os.path.basename(master_path)} (Format: {vis_fmt})", duration=duration)
+        _logger.info(f"--- Segment Visual Generation for: {os.path.basename(master_path)} (Format: {vis_fmt}) finished in {duration}. ---")
         self.message_queue.put(("progress", len(jobs)))
 
-    def _get_mapped_gui_verbosity_level(self):
-        level_str = self.merge_script_gui_silence_level_var.get()
-        if level_str == "Verbose (Detail)":       return message_catalog.VERBOSITY_LEVEL_DETAIL   # 15
-        elif level_str == "Normal (Info)":        return message_catalog.VERBOSITY_LEVEL_INFO     # 20
-        elif level_str == "Less Verbose (Warnings)":return message_catalog.VERBOSITY_LEVEL_WARNING  # 30
-        elif level_str == "Silent (Errors Only)": return message_catalog.VERBOSITY_LEVEL_ERROR    # 40
-        return message_catalog.VERBOSITY_LEVEL_INFO
-
-    def _update_gui_verbosity_from_combobox(self, event=None):
-        new_level = self._get_mapped_gui_verbosity_level()
-        message_catalog.set_gui_verbosity(new_level) # Use module prefix for the function call too for consistency
-        global_log_message("GUI_VERBOSITY_CHANGED", level_name=self.merge_script_gui_silence_level_var.get(), numeric_level=new_level)
+    # Removed _get_mapped_gui_verbosity_level and _update_gui_verbosity_from_combobox
 
 
 if __name__ == "__main__":
+    # Configure basic logging for console output
+    logging.basicConfig(level=logging.INFO, # Default to INFO level
+                        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                        datefmt='%H:%M:%S')
+
     root = tk.Tk()
-    # Console verbosity for Tkinter/internal Python stuff if not handled by GUI log
-    # from message_catalog import set_console_verbosity 
-    # set_console_verbosity(VERBOSITY_LEVEL_WARNING) # Example
     app = DepthCrafterGUI(root)
     root.mainloop()
