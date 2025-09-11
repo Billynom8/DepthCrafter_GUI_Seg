@@ -210,7 +210,7 @@ class DepthCrafterGUI:
         self.max_res = tk.IntVar(value=960)
         self.seed = tk.IntVar(value=42)
         self.cpu_offload = tk.StringVar(value="model")
-        self.use_cudnn_benchmark = tk.BooleanVar(value=True)
+        self.use_cudnn_benchmark = tk.BooleanVar(value=False)
         self.process_length = tk.IntVar(value=-1)
         self.target_fps = tk.DoubleVar(value=-1.0)
         self.window_size = tk.IntVar(value=110)
@@ -234,6 +234,8 @@ class DepthCrafterGUI:
         self.current_input_mode = "batch_folder" # "batch_folder", "single_video_file", "single_image_file", "image_sequence_folder"
         self.single_file_mode_active = False # True if a single file/sequence folder is explicitly loaded
         self.effective_move_original_on_completion = self.MOVE_ORIGINAL_TO_FINISHED_FOLDER_ON_COMPLETION
+        self.use_local_models_only_var = tk.BooleanVar(value=False)
+        self.status_message_var = tk.StringVar(value="Ready")
 
         self.all_tk_vars = {
             "input_dir_or_file_var": self.input_dir_or_file_var,
@@ -263,6 +265,7 @@ class DepthCrafterGUI:
             "min_frames_to_keep_npz_var": self.min_frames_to_keep_npz_var,
             "keep_intermediate_segment_visual_format_var": self.keep_intermediate_segment_visual_format_var,
             "merge_output_suffix_var": self.merge_output_suffix_var,
+            "use_local_models_only_var": self.use_local_models_only_var,
             # "merge_script_gui_silence_level_var": self.merge_script_gui_silence_level_var, # Removed
         }
         self.initial_default_settings = self._collect_all_settings()
@@ -296,6 +299,11 @@ class DepthCrafterGUI:
         self.file_menu.add_command(label="Load Settings...", command=self._load_all_settings)
         self.file_menu.add_command(label="Save Settings As...", command=self._save_all_settings_as)
         self.file_menu.add_command(label="Reset Settings to Default", command=self._reset_settings_to_defaults)
+        self.file_menu.add_separator()
+        self.file_menu.add_command(label="Restore Finished Input Files...", command=lambda: self._restore_input_files(folder_type="finished"))
+        self.file_menu.add_command(label="Restore Failed Input Files...", command=lambda: self._restore_input_files(folder_type="failed"))
+        self.file_menu.add_separator()
+        self.file_menu.add_checkbutton(label="Use Local Models Only", variable=self.use_local_models_only_var, onvalue=True, offvalue=False)
         self.file_menu.add_separator()
         self.file_menu.add_command(label="Exit", command=self.on_close)
 
@@ -381,6 +389,7 @@ class DepthCrafterGUI:
         if messagebox.askyesno("Reset Settings", "Are you sure you want to reset all settings to their default values?"):
             self._apply_all_settings(self.initial_default_settings)
             _logger.info("All settings have been reset to their initial defaults.")
+            self.status_message_var.set("Settings reset to defaults.")
 
     def _load_all_settings(self):
         filepath = filedialog.askopenfilename(title="Load Settings File", filetypes=self.SETTINGS_FILETYPES, initialdir=self.last_settings_dir)
@@ -408,6 +417,73 @@ class DepthCrafterGUI:
         else:
             messagebox.showerror("Save Error", f"Could not save settings to:\n{filepath}\nSee console log for details.")
 
+    def _restore_input_files(self, folder_type: str): # Added folder_type argument
+        """Moves original input files from a specified 'finished' or 'failed' subfolder back to their input directory."""
+        display_folder_name = folder_type.capitalize() # "Finished" or "Failed"
+
+        if not messagebox.askyesno(f"Restore {display_folder_name} Input Files", 
+                                   f"Are you sure you want to move original input files from the '{display_folder_name}' subfolder "
+                                   f"back to their original input directory?"):
+            _logger.info(f"Restore {display_folder_name} operation cancelled by user confirmation.")
+            return
+
+        source_input_path = self.input_dir_or_file_var.get()
+
+        if not os.path.isdir(source_input_path):
+            messagebox.showerror("Restore Error", f"Restore '{display_folder_name}' input files operation is only applicable when 'Input Folder/File' is set to a directory (batch mode).")
+            _logger.warning(f"Restore {display_folder_name} operation skipped: Input Folder/File is not a directory: {source_input_path}")
+            self.status_message_var.set(f"Restore {display_folder_name} failed: Input is not a directory.")
+            return
+
+        restored_count = 0
+        errors_count = 0
+        
+        # Only process the specified folder_type
+        finished_source_folder = os.path.join(source_input_path, folder_type) # Use folder_type directly
+        
+        if os.path.isdir(finished_source_folder):
+            _logger.info(f"==> Restoring input files from: {finished_source_folder}")
+            for filename in os.listdir(finished_source_folder):
+                src_path = os.path.join(finished_source_folder, filename)
+                dest_path = os.path.join(source_input_path, filename) 
+                
+                if os.path.isfile(src_path):
+                    try:
+                        if os.path.exists(dest_path):
+                            base, ext = os.path.splitext(filename)
+                            new_filename = f"{base}_restored_{time.strftime('%Y%m%d%H%M%S')}{ext}"
+                            dest_path = os.path.join(source_input_path, new_filename)
+                            _logger.warning(f"Input file '{filename}' already exists in '{source_input_path}'. Restoring as '{new_filename}'.")
+                        
+                        shutil.move(src_path, dest_path)
+                        restored_count += 1
+                        _logger.debug(f"Moved input file '{filename}' to '{source_input_path}'")
+                    except Exception as e:
+                        errors_count += 1
+                        _logger.error(f"Error moving input file '{filename}' from '{finished_source_folder}': {e}", exc_info=True)
+            
+            # Clean up empty folder after restoring
+            try:
+                if not os.listdir(finished_source_folder):
+                    os.rmdir(finished_source_folder)
+                    _logger.info(f"Removed empty folder: {finished_source_folder}")
+            except OSError as e:
+                _logger.warning(f"Could not remove empty folder '{finished_source_folder}': {e}")
+        else:
+            _logger.info(f"==> Input '{display_folder_name}' folder not found: {finished_source_folder}")
+
+
+        # Final status update
+        if restored_count > 0 or errors_count > 0:
+            self.status_message_var.set(f"Restore {display_folder_name} complete: {restored_count} input files moved, {errors_count} errors.")
+            messagebox.showinfo("Restoration Complete", 
+                                f"{display_folder_name} input files restoration attempted.\n"
+                                f"Successfully restored: {restored_count} file(s)\n"
+                                f"Skipped (due to error/conflict): {errors_count} file(s)")
+        else:
+            self.status_message_var.set(f"No {display_folder_name.lower()} input files found to restore.")
+            messagebox.showinfo("Restoration Complete", f"No input files found in the '{display_folder_name}' folder to restore.")
+        
     def _add_param_with_help(self, parent, label_text: str, var, row: int, help_key: str, entry_width=18, col_offset=0):
         tk.Label(parent, text=label_text).grid(row=row, column=0 + col_offset, sticky="e", padx=5, pady=2)
         entry = tk.Entry(parent, textvariable=var, width=entry_width)
@@ -439,6 +515,7 @@ class DepthCrafterGUI:
                 pre_train_path="stabilityai/stable-video-diffusion-img2vid-xt",
                 cpu_offload=self.cpu_offload.get(),
                 use_cudnn_benchmark=self.use_cudnn_benchmark.get(),
+            local_files_only=self.use_local_models_only_var.get()
             )
         except Exception as e:
             _logger.exception(f"CRITICAL: Failed to initialize DepthCrafterDemo: {e}")
@@ -451,6 +528,7 @@ class DepthCrafterGUI:
         for i, job_info_to_run in enumerate(video_processing_jobs):
             if self.stop_event.is_set():
                 _logger.info("Processing cancelled by user after current item.")
+                self.status_message_var.set("Stopping...")
                 break
             
             current_video_path = job_info_to_run["video_path"] 
@@ -479,6 +557,7 @@ class DepthCrafterGUI:
             
             log_msg_prefix = f"Segment {job_info_to_run.get('segment_id', -1)+1}/{job_info_to_run.get('total_segments', 0)}" if is_segment_job else "Full video"
             _logger.info(f"Processing {original_basename} - {log_msg_prefix} ({i+1}/{len(video_processing_jobs)})")
+            self.status_message_var.set(f"Processing {i + 1} of {len(video_processing_jobs)} ")
 
             job_successful, returned_job_specific_metadata = self._process_single_job(demo, job_info_to_run, master_meta_for_this_vid)
             
@@ -517,6 +596,7 @@ class DepthCrafterGUI:
             torch.cuda.empty_cache()
             _logger.info("CUDA cache cleared.")
         _logger.info("All processing jobs complete!")
+        self.status_message_var.set("Processing Finished.")
 
     def _initialize_master_metadata_entry(self, original_basename, job_info_for_original_details, total_expected_jobs_for_this_video):
         entry = {
@@ -603,6 +683,7 @@ class DepthCrafterGUI:
             returned_job_specific_metadata["error_message"] = str(e)
             log_msg_prefix_local = f"Segment {job_info.get('segment_id', -1)+1}/{job_info.get('total_segments', 0)}" if is_segment_job else "Full video"
             _logger.exception(f"  Exception during job for {original_basename} ({log_msg_prefix_local}): {e}")
+            self.status_message_var.set(f"Error: {e.__class__.__name__} during {original_basename}")
         return job_successful, returned_job_specific_metadata
 
     def _determine_video_paths_and_processing_mode(self, original_basename, master_meta_for_this_vid):
@@ -1046,6 +1127,9 @@ class DepthCrafterGUI:
         self.progress = ttk.Progressbar(progress_bar_frame, orient="horizontal", length=300, mode="determinate")
         self.progress.pack(fill=tk.X, expand=True, padx=0, pady=0)
 
+        self.status_label = tk.Label(progress_bar_frame, textvariable=self.status_message_var, bd=1, relief=tk.SUNKEN, anchor=tk.W)
+        self.status_label.pack(fill=tk.X, padx=0, pady=2)
+
         ctrl_frame = tk.Frame(self.root)
         ctrl_frame.pack(pady=(5, 10), padx=10, fill="x", expand=False)
 
@@ -1111,6 +1195,7 @@ class DepthCrafterGUI:
 
         if hasattr(self, 'file_menu'):
             try:
+                self.file_menu.entryconfig("Use Local Models Only", state=new_state)
                 for item_label in ["Load Settings...", "Save Settings As...", "Reset Settings to Default"]:
                     self.file_menu.entryconfig(item_label, state=new_state)
             except tk.TclError: pass
@@ -1444,6 +1529,7 @@ class DepthCrafterGUI:
                     final_jobs_to_process.append(full_source_job)
 
         if final_jobs_to_process:
+            self.status_message_var.set("Starting processing...")
             self._set_ui_processing_state(True)
             self.processing_thread = threading.Thread(target=self._start_processing_wrapper, 
                                                       args=(final_jobs_to_process, base_job_info_map_for_run), 
@@ -1457,7 +1543,7 @@ class DepthCrafterGUI:
         try: 
             self.start_processing(video_processing_jobs, base_job_info_map)
         finally: 
-            self.message_queue.put(("set_ui_state", False)) 
+            self._set_ui_processing_state(False)
 
     def _determine_input_mode_from_path(self, path_str: str) -> Tuple[str, bool]:
         """
@@ -1757,7 +1843,7 @@ class DepthCrafterGUI:
 if __name__ == "__main__":
     # Configure basic logging for console output
     logging.basicConfig(level=logging.INFO, # Default to INFO level
-                        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                        format='%(asctime)s - %(message)s',
                         datefmt='%H:%M:%S')
 
     root = tk.Tk()

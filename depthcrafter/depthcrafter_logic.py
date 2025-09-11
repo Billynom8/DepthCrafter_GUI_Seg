@@ -46,19 +46,21 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="diffusers.mode
 from typing import Optional, Tuple, List, Dict, Union
 
 class DepthCrafterDemo:
-    def __init__(self, unet_path: str, pre_train_path: str, cpu_offload: str = "model", use_cudnn_benchmark: bool = True):
+    def __init__(self, unet_path: str, pre_train_path: str, cpu_offload: str = "model", use_cudnn_benchmark: bool = True, local_files_only: bool = False):
         torch.backends.cudnn.benchmark = use_cudnn_benchmark
         try:
             unet = DiffusersUNetSpatioTemporalConditionModelDepthCrafter.from_pretrained(
                 unet_path,
                 low_cpu_mem_usage=True,
                 torch_dtype=torch.float16,
+                local_files_only=local_files_only
             )
             self.pipe = DepthCrafterPipeline.from_pretrained(
                 pre_train_path,
                 unet=unet,
                 torch_dtype=torch.float16,
                 variant="fp16",
+                local_files_only=local_files_only
             )
             if cpu_offload == "sequential":
                 self.pipe.enable_sequential_cpu_offload()
