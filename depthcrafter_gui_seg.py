@@ -6,6 +6,7 @@ import glob
 import shutil
 import json
 import tkinter as tk
+from tkinter import Toplevel, Label
 from tkinter import filedialog, messagebox, ttk
 import queue # Still needed for progress updates
 import time
@@ -54,7 +55,45 @@ except ImportError:
 from typing import Optional, Tuple, List, Dict
 
 GUI_VERSION = "25.09.10"
+_HELP_TEXTS = {}
 
+def _create_hover_tooltip(widget, help_key):
+    """Creates a mouse-over tooltip for the given widget using text from _HELP_TEXTS."""
+    if help_key in _HELP_TEXTS:
+        Tooltip(widget, _HELP_TEXTS[help_key])
+    else:
+        _logger.warning(f"No help text found for key '{help_key}' to create tooltip for widget {widget}.")
+
+class Tooltip:
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.tooltip_window = None
+        self.widget.bind("<Enter>", self.show_tooltip)
+        self.widget.bind("<Leave>", self.hide_tooltip)
+        self.widget.bind("<ButtonPress>", self.hide_tooltip) # Hide on click
+
+    def show_tooltip(self, event=None):
+        if self.tooltip_window or not self.text:
+            return
+        # Adjust position slightly for better visibility
+        x, y, _, _ = self.widget.bbox("insert")
+        x += self.widget.winfo_rootx() + 25
+        y += self.widget.winfo_rooty() + 20
+
+        self.tooltip_window = Toplevel(self.widget)
+        self.tooltip_window.wm_overrideredirect(True) # Remove window decorations
+        self.tooltip_window.wm_geometry(f"+{x}+{y}")
+
+        label = Label(self.tooltip_window, text=self.text, background="#ffffe0", relief="solid", borderwidth=1,
+                      font=("tahoma", "8", "normal"), justify="left", wraplength=250)
+        label.pack(ipadx=1)
+
+    def hide_tooltip(self, event=None):
+        if self.tooltip_window:
+            self.tooltip_window.destroy()
+        self.tooltip_window = None
+        
 class DepthCrafterGUI:
     CONFIG_FILENAME = "config.json"
     HELP_CONTENT_FILENAME = os.path.join("depthcrafter", "help_content.json")
@@ -207,7 +246,6 @@ class DepthCrafterGUI:
         self.output_dir = tk.StringVar(value=os.path.normpath("./output_depthmaps"))
         self.guidance_scale = tk.DoubleVar(value=1.0)
         self.inference_steps = tk.IntVar(value=5)
-        self.max_res = tk.IntVar(value=960)
         self.seed = tk.IntVar(value=42)
         self.cpu_offload = tk.StringVar(value="model")
         self.use_cudnn_benchmark = tk.BooleanVar(value=False)
@@ -236,13 +274,17 @@ class DepthCrafterGUI:
         self.effective_move_original_on_completion = self.MOVE_ORIGINAL_TO_FINISHED_FOLDER_ON_COMPLETION
         self.use_local_models_only_var = tk.BooleanVar(value=False)
         self.status_message_var = tk.StringVar(value="Ready")
+        self.current_filename_var = tk.StringVar(value="N/A")
+        self.current_resolution_var = tk.StringVar(value="N/A")
+        self.current_frames_var = tk.StringVar(value="N/A")
+        self.target_height = tk.IntVar(value=384) # Initial default height
+        self.target_width = tk.IntVar(value=640)  # Initial default width
 
         self.all_tk_vars = {
             "input_dir_or_file_var": self.input_dir_or_file_var,
             "output_dir": self.output_dir,
             "guidance_scale": self.guidance_scale,
             "inference_steps": self.inference_steps,
-            "max_res": self.max_res,
             "seed": self.seed,
             "cpu_offload": self.cpu_offload,
             "use_cudnn_benchmark": self.use_cudnn_benchmark,
@@ -266,7 +308,8 @@ class DepthCrafterGUI:
             "keep_intermediate_segment_visual_format_var": self.keep_intermediate_segment_visual_format_var,
             "merge_output_suffix_var": self.merge_output_suffix_var,
             "use_local_models_only_var": self.use_local_models_only_var,
-            # "merge_script_gui_silence_level_var": self.merge_script_gui_silence_level_var, # Removed
+            "target_height": self.target_height,
+            "target_width": self.target_width,
         }
         self.initial_default_settings = self._collect_all_settings()
         self._help_data = None
@@ -282,6 +325,7 @@ class DepthCrafterGUI:
         self.load_config() 
         self.stop_event = threading.Event()
         self.processing_thread = None
+        self._load_help_content()
         self._create_menubar()
         self.create_widgets() 
         # self.root.after(100, self.process_queue) # Removed GUI log update
@@ -290,62 +334,59 @@ class DepthCrafterGUI:
                 
         _logger.info("DepthCrafter GUI initialized successfully.")
 
-    def _create_menubar(self):
-        menubar = tk.Menu(self.root)
-        self.root.config(menu=menubar)
-
-        self.file_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="File", menu=self.file_menu)
-        self.file_menu.add_command(label="Load Settings...", command=self._load_all_settings)
-        self.file_menu.add_command(label="Save Settings As...", command=self._save_all_settings_as)
-        self.file_menu.add_command(label="Reset Settings to Default", command=self._reset_settings_to_defaults)
-        self.file_menu.add_separator()
-        self.file_menu.add_command(label="Restore Finished Input Files...", command=lambda: self._restore_input_files(folder_type="finished"))
-        self.file_menu.add_command(label="Restore Failed Input Files...", command=lambda: self._restore_input_files(folder_type="failed"))
-        self.file_menu.add_separator()
-        self.file_menu.add_checkbutton(label="Use Local Models Only", variable=self.use_local_models_only_var, onvalue=True, offvalue=False)
-        self.file_menu.add_separator()
-        self.file_menu.add_command(label="Exit", command=self.on_close)
-
-        help_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Help", menu=help_menu)
-        help_menu.add_command(label="GUI Overview", command=lambda: self._show_help_for("general_gui_overview"))
-
     def _load_help_content(self):
-        if self._help_data is None:
-            self._help_data = load_json_file(DepthCrafterGUI.HELP_CONTENT_FILENAME)
-            if not self._help_data:
-                self._help_data = {}
-                _logger.warning(f"Warning: Could not load help content from {DepthCrafterGUI.HELP_CONTENT_FILENAME}. Help icons will be disabled or show 'not found'.")
+        if self._help_data is None: # Only load once
+            raw_data = load_json_file(DepthCrafterGUI.HELP_CONTENT_FILENAME)
+            if raw_data:
+                self._help_data = raw_data # Keep raw data for future potential uses
+                # Populate the module-level _HELP_TEXTS dictionary for tooltips
+                global _HELP_TEXTS
+                _HELP_TEXTS.clear() # Clear existing in case of reload (e.g., in future)
+                for key, content in raw_data.items():
+                    if "text" in content: # Ensure 'text' key exists
+                        _HELP_TEXTS[key] = content["text"]
+            else:
+                self._help_data = {} # Indicate loading failed
+                _logger.warning(f"Warning: Could not load help content from {DepthCrafterGUI.HELP_CONTENT_FILENAME}. Tooltips will be limited/show 'not found'.")
         return self._help_data
 
     def _show_help_for(self, help_key: str):
-        help_content_store = self._load_help_content()
-        content = help_content_store.get(help_key)
+        """Displays help content for a given key in a Tkinter Toplevel window."""
+        # _help_data should already be loaded by __init__
+        content = self._help_data.get(help_key)
+        
         if not content:
             messagebox.showinfo("Help Not Found", f"No help information available for '{help_key}'.\nEnsure '{DepthCrafterGUI.HELP_CONTENT_FILENAME}' is present and contains this key.")
+            _logger.warning(f"No help content found for key: '{help_key}' in {DepthCrafterGUI.HELP_CONTENT_FILENAME}.")
             return
 
         help_title = content.get("title", "Help Information")
         help_text_str = content.get("text", "No details available.")
+        
+        # Now, create the Toplevel window as it was before
         help_window = tk.Toplevel(self.root)
         help_window.title(help_title)
         help_window.minsize(400, 200)
         help_window.transient(self.root)
         help_window.grab_set()
+        
         text_frame = ttk.Frame(help_window, padding="10")
         text_frame.pack(expand=True, fill="both")
+        
         help_text_widget = tk.Text(text_frame, wrap=tk.WORD, relief="flat", borderwidth=0, padx=5, pady=5, font=("Segoe UI", 9))
         help_text_widget.insert(tk.END, help_text_str)
         help_text_widget.config(state=tk.DISABLED)
+        
         scrollbar = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=help_text_widget.yview)
         help_text_widget['yscrollcommand'] = scrollbar.set
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         help_text_widget.pack(side=tk.LEFT, expand=True, fill="both")
+        
         button_frame = ttk.Frame(help_window, padding=(0, 5, 0, 10))
         button_frame.pack(fill=tk.X)
         ok_button = ttk.Button(button_frame, text="OK", command=help_window.destroy, width=10)
         ok_button.pack()
+        
         self.root.update_idletasks()
         help_window.update_idletasks()
         x = self.root.winfo_x() + (self.root.winfo_width() // 2) - (help_window.winfo_width() // 2)
@@ -353,7 +394,8 @@ class DepthCrafterGUI:
         help_window.geometry(f"+{x}+{y}")
         ok_button.focus_set()
         help_window.wait_window()
-
+        _logger.debug(f"Displayed help overview for '{help_key}'.")
+        
     def _collect_all_settings(self) -> dict:
         settings_data = {}
         for key, tk_var in self.all_tk_vars.items():
@@ -483,120 +525,6 @@ class DepthCrafterGUI:
         else:
             self.status_message_var.set(f"No {display_folder_name.lower()} input files found to restore.")
             messagebox.showinfo("Restoration Complete", f"No input files found in the '{display_folder_name}' folder to restore.")
-        
-    def _add_param_with_help(self, parent, label_text: str, var, row: int, help_key: str, entry_width=18, col_offset=0):
-        tk.Label(parent, text=label_text).grid(row=row, column=0 + col_offset, sticky="e", padx=5, pady=2)
-        entry = tk.Entry(parent, textvariable=var, width=entry_width)
-        entry.grid(row=row, column=1 + col_offset, padx=(5,0), pady=2, sticky="w")
-        help_label = tk.Label(parent, text="❓", fg="blue", cursor="hand2")
-        help_label.grid(row=row, column=2 + col_offset, padx=(2,5), pady=2, sticky="w")
-        help_label.bind("<Button-1>", lambda e, key=help_key: self._show_help_for(key))
-        return entry, help_label
-
-    def _add_manual_help_icon(self, parent, help_key: str, row: int, column: int, sticky="w", padx=(2,5), pady=2):
-        help_label = tk.Label(parent, text="❓", fg="blue", cursor="hand2")
-        help_label.bind("<Button-1>", lambda e, key=help_key: self._show_help_for(key))
-        help_label.grid(row=row, column=column, padx=padx, pady=pady, sticky=sticky)
-        return help_label
-
-    def start_processing(self, video_processing_jobs, base_job_info_map):
-        self.stop_event.clear()
-        self.progress["value"] = 0
-        self.progress["maximum"] = len(video_processing_jobs)
-        _logger.info(f"Starting batch processing for {len(video_processing_jobs)} items...")
-
-        try:
-            if torch.cuda.is_available():
-                 _logger.info(f"CUDA available. Device: {torch.cuda.get_device_name(0)}")
-            else:
-                _logger.warning("CUDA not available. Processing will use CPU (if supported).")
-            demo = DepthCrafterDemo(
-                unet_path="tencent/DepthCrafter",
-                pre_train_path="stabilityai/stable-video-diffusion-img2vid-xt",
-                cpu_offload=self.cpu_offload.get(),
-                use_cudnn_benchmark=self.use_cudnn_benchmark.get(),
-            local_files_only=self.use_local_models_only_var.get()
-            )
-        except Exception as e:
-            _logger.exception(f"CRITICAL: Failed to initialize DepthCrafterDemo: {e}")
-            return
-
-        all_videos_master_metadata = {} 
-
-        _logger.info("Scanning input folder: Please wait...")
-        
-        for i, job_info_to_run in enumerate(video_processing_jobs):
-            if self.stop_event.is_set():
-                _logger.info("Processing cancelled by user after current item.")
-                self.status_message_var.set("Stopping...")
-                break
-            
-            current_video_path = job_info_to_run["video_path"] 
-            original_basename = job_info_to_run["original_basename"]
-            is_segment_job = job_info_to_run["is_segment"]
-
-            if current_video_path not in all_videos_master_metadata:
-                current_video_comprehensive_base_info = base_job_info_map.get(current_video_path, {})
-                total_segments_for_this_video_overall = job_info_to_run.get("total_segments") if is_segment_job else 1
-                if total_segments_for_this_video_overall is None and is_segment_job:
-                    _logger.warning(f"Warning: 'total_segments' missing for segment job of {original_basename}. Defaulting to 1 for master_meta init.")
-
-                all_videos_master_metadata[current_video_path] = self._initialize_master_metadata_entry(
-                    original_basename, 
-                    job_info_to_run,
-                    total_segments_for_this_video_overall
-                )
-                
-                pre_existing_successful_segment_metadatas = current_video_comprehensive_base_info.get("pre_existing_successful_jobs", [])
-                if pre_existing_successful_segment_metadatas:
-                    _logger.debug(f"Loading {len(pre_existing_successful_segment_metadatas)} pre-existing successful segment metadata entries for {original_basename} into current run's master data.")
-                    all_videos_master_metadata[current_video_path]["jobs_info"].extend(pre_existing_successful_segment_metadatas)
-                    all_videos_master_metadata[current_video_path]["completed_successful_jobs"] += len(pre_existing_successful_segment_metadatas)
-            
-            master_meta_for_this_vid = all_videos_master_metadata[current_video_path]
-            
-            log_msg_prefix = f"Segment {job_info_to_run.get('segment_id', -1)+1}/{job_info_to_run.get('total_segments', 0)}" if is_segment_job else "Full video"
-            _logger.info(f"Processing {original_basename} - {log_msg_prefix} ({i+1}/{len(video_processing_jobs)})")
-            self.status_message_var.set(f"Processing {i + 1} of {len(video_processing_jobs)} ")
-
-            job_successful, returned_job_specific_metadata = self._process_single_job(demo, job_info_to_run, master_meta_for_this_vid)
-            
-            self.message_queue.put(("progress", i + 1)) 
-            
-            if is_segment_job and "segment_id" not in returned_job_specific_metadata:
-                returned_job_specific_metadata["segment_id"] = job_info_to_run.get("segment_id", -1)
-            
-            if "_individual_metadata_path" in returned_job_specific_metadata:
-                del returned_job_specific_metadata["_individual_metadata_path"]
-            
-            master_meta_for_this_vid["jobs_info"].append(returned_job_specific_metadata)
-            
-            if job_successful:
-                master_meta_for_this_vid["completed_successful_jobs"] += 1
-            else:
-                master_meta_for_this_vid["completed_failed_jobs"] += 1
-                
-            total_accounted_for_vid = master_meta_for_this_vid["completed_successful_jobs"] + master_meta_for_this_vid["completed_failed_jobs"]
-            
-            if total_accounted_for_vid >= master_meta_for_this_vid["total_expected_jobs"]:
-                self._finalize_video_processing(current_video_path, original_basename, master_meta_for_this_vid)
-
-        if 'demo' in locals() and demo is not None:
-            try:
-                if hasattr(demo, 'pipe') and demo.pipe is not None:
-                    if hasattr(demo.pipe, 'vae') and demo.pipe.vae is not None: del demo.pipe.vae
-                    if hasattr(demo.pipe, 'unet') and demo.pipe.unet is not None: del demo.pipe.unet
-                    del demo.pipe
-                del demo
-                _logger.debug("DepthCrafter model components released.")
-            except Exception as e_cleanup:
-                _logger.warning(f"Error during DepthCrafter model cleanup: {e_cleanup}")
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            _logger.info("CUDA cache cleared.")
-        _logger.info("All processing jobs complete!")
-        self.status_message_var.set("Processing Finished.")
 
     def _initialize_master_metadata_entry(self, original_basename, job_info_for_original_details, total_expected_jobs_for_this_video):
         entry = {
@@ -608,7 +536,8 @@ class DepthCrafterGUI:
             "global_processing_settings": {
                 "guidance_scale": self.guidance_scale.get(),
                 "inference_steps": self.inference_steps.get(),
-                "max_res_settings": self.max_res.get(),
+                "target_height_setting": self.target_height.get(),
+                "target_width_setting": self.target_width.get(),
                 "seed_setting": self.seed.get(),
                 "target_fps_setting": self.target_fps.get(),
                 "process_max_frames_setting": self.process_length.get(),
@@ -635,7 +564,6 @@ class DepthCrafterGUI:
         snapshotted_settings = master_meta_for_this_vid["global_processing_settings"]
         guidance_scale_for_job = snapshotted_settings["guidance_scale"]
         inference_steps_for_job = snapshotted_settings["inference_steps"]
-        max_res_for_job = snapshotted_settings["max_res_settings"]
         seed_for_job = snapshotted_settings["seed_setting"]
         process_length_for_run_param = snapshotted_settings["process_max_frames_setting"] if not is_segment_job else -1
         
@@ -659,7 +587,8 @@ class DepthCrafterGUI:
                 gui_window_size=window_size_for_pipe_call,
                 gui_overlap=overlap_for_pipe_call, 
                 process_length_for_read_full_video=process_length_for_run_param, 
-                max_res=max_res_for_job, 
+                target_height=self.target_height.get(),
+                target_width=self.target_width.get(),
                 seed=seed_for_job, 
                 original_video_basename_override=original_basename,
                 segment_job_info_param=job_info if is_segment_job else None,
@@ -935,74 +864,174 @@ class DepthCrafterGUI:
         else:
             _logger.info(f"Keeping intermediate NPZ files and _master_meta.json in {segment_subfolder_path}")
 
+    def _create_menubar(self):
+        menubar = tk.Menu(self.root)
+        self.root.config(menu=menubar)
+
+        self.file_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="File", menu=self.file_menu)
+        self.file_menu.add_command(label="Load Settings...", command=self._load_all_settings)
+        self.file_menu.add_command(label="Save Settings As...", command=self._save_all_settings_as)
+        self.file_menu.add_command(label="Reset Settings to Default", command=self._reset_settings_to_defaults)
+        self.file_menu.add_separator()
+        self.file_menu.add_command(label="Restore Finished Input Files...", command=lambda: self._restore_input_files(folder_type="finished"))
+        self.file_menu.add_command(label="Restore Failed Input Files...", command=lambda: self._restore_input_files(folder_type="failed"))
+        self.file_menu.add_separator()
+        self.file_menu.add_checkbutton(label="Use Local Models Only", variable=self.use_local_models_only_var, onvalue=True, offvalue=False)
+        self.file_menu.add_separator()
+        self.file_menu.add_command(label="Exit", command=self.on_close)
+
+        help_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(label="GUI Overview", command=lambda: self._show_help_for("general_gui_overview"))
+
     def create_widgets(self):
-        # Removed self.widgets_to_disable_during_processing initialization, it's done below
         self.widgets_to_disable_during_processing = []
-        # Removed gui_verbosity_options
         
+        # --- Input Source Frame ---
         dir_frame = tk.LabelFrame(self.root, text="Input Source")
         dir_frame.pack(fill="x", padx=10, pady=5, expand=False)        
+        
         tk.Label(dir_frame, text="Input Folder/File:").grid(row=0, column=0, sticky="e", padx=5, pady=2)
         self.entry_input_dir_or_file = tk.Entry(dir_frame, textvariable=self.input_dir_or_file_var, width=50)
-        self.entry_input_dir_or_file.grid(row=0, column=1, padx=5, pady=2, sticky="ew")        
+        self.entry_input_dir_or_file.grid(row=0, column=1, padx=5, pady=2, sticky="ew")
+        _create_hover_tooltip(self.entry_input_dir_or_file, "input_dir_or_file") # Tooltip for entry
+        
         browse_buttons_frame = tk.Frame(dir_frame)
         browse_buttons_frame.grid(row=0, column=2, padx=5, pady=0, sticky="w")
+        
         self.browse_input_folder_btn = tk.Button(browse_buttons_frame, text="Browse Folder", command=self.browse_input_folder)
-        self.browse_input_folder_btn.pack(side=tk.LEFT, padx=(0,2))        
+        self.browse_input_folder_btn.pack(side=tk.LEFT, padx=(0,2))
+        _create_hover_tooltip(self.browse_input_folder_btn, "browse_input_folder") # Tooltip for button
+        
         self.browse_single_file_btn = tk.Button(browse_buttons_frame, text="Load Single File", command=self.browse_single_input_file)
         self.browse_single_file_btn.pack(side=tk.LEFT, padx=(2,0))
+        _create_hover_tooltip(self.browse_single_file_btn, "browse_single_file") # Tooltip for button
+        
         dir_frame.columnconfigure(1, weight=1)
-        self.widgets_to_disable_during_processing.extend([self.entry_input_dir_or_file, self.browse_input_folder_btn, self.browse_single_file_btn])
+        self.widgets_to_disable_during_processing.extend([
+            self.entry_input_dir_or_file, 
+            self.browse_input_folder_btn, 
+            self.browse_single_file_btn
+        ])
 
         tk.Label(dir_frame, text="Output Folder:").grid(row=1, column=0, sticky="e", padx=5, pady=2)
         self.entry_output_dir = tk.Entry(dir_frame, textvariable=self.output_dir, width=50)
         self.entry_output_dir.grid(row=1, column=1, padx=5, pady=2)
+        _create_hover_tooltip(self.entry_output_dir, "output_dir") # Tooltip for entry
+        
         self.browse_output_btn = tk.Button(dir_frame, text="Browse", command=self.browse_output)
         self.browse_output_btn.grid(row=1, column=2, padx=5, pady=2)
+        _create_hover_tooltip(self.browse_output_btn, "browse_output") # Tooltip for button
+        
         self.widgets_to_disable_during_processing.extend([self.entry_output_dir, self.browse_output_btn])
 
+        # --- Top Controls Outer Frame ---
         top_controls_outer_frame = tk.Frame(self.root)
         top_controls_outer_frame.pack(fill="x", padx=0, pady=0, expand=False) 
 
+        # --- Main Parameters Frame ---
         main_params_frame = tk.LabelFrame(top_controls_outer_frame, text="Main Parameters")
         main_params_frame.grid(row=0, column=0, padx=(10,5), pady=5, sticky="nw")
         row_idx = 0
-        e, hl = self._add_param_with_help(main_params_frame, "Guidance Scale:", self.guidance_scale, row_idx, "guidance_scale"); self.widgets_to_disable_during_processing.extend([e, hl]); row_idx += 1
-        e, hl = self._add_param_with_help(main_params_frame, "Inference Steps:", self.inference_steps, row_idx, "inference_steps"); self.widgets_to_disable_during_processing.extend([e, hl]); row_idx += 1
-        e, hl = self._add_param_with_help(main_params_frame, "Max Resolution:", self.max_res, row_idx, "max_res"); self.widgets_to_disable_during_processing.extend([e, hl]); row_idx += 1
-        e, hl = self._add_param_with_help(main_params_frame, "Seed:", self.seed, row_idx, "seed"); self.widgets_to_disable_during_processing.extend([e, hl]); row_idx += 1
+        
+        # Guidance Scale
+        tk.Label(main_params_frame, text="Guidance Scale:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        entry_guidance_scale = tk.Entry(main_params_frame, textvariable=self.guidance_scale, width=18)
+        entry_guidance_scale.grid(row=row_idx, column=1, padx=(5,0), pady=2, sticky="w")
+        _create_hover_tooltip(entry_guidance_scale, "guidance_scale")
+        self.widgets_to_disable_during_processing.append(entry_guidance_scale); row_idx += 1
+        
+        # Inference Steps
+        tk.Label(main_params_frame, text="Inference Steps:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        entry_inference_steps = tk.Entry(main_params_frame, textvariable=self.inference_steps, width=18)
+        entry_inference_steps.grid(row=row_idx, column=1, padx=(5,0), pady=2, sticky="w")
+        _create_hover_tooltip(entry_inference_steps, "inference_steps")
+        self.widgets_to_disable_during_processing.append(entry_inference_steps); row_idx += 1
 
+        # Target Height
+        tk.Label(main_params_frame, text="Target Height:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        entry_target_height = tk.Entry(main_params_frame, textvariable=self.target_height, width=18)
+        entry_target_height.grid(row=row_idx, column=1, padx=(5,0), pady=2, sticky="w")
+        _create_hover_tooltip(entry_target_height, "target_height") # Create new tooltip key
+        self.widgets_to_disable_during_processing.append(entry_target_height); row_idx += 1
+
+        # Target Width
+        tk.Label(main_params_frame, text="Target Width:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        entry_target_width = tk.Entry(main_params_frame, textvariable=self.target_width, width=18)
+        entry_target_width.grid(row=row_idx, column=1, padx=(5,0), pady=2, sticky="w")
+        _create_hover_tooltip(entry_target_width, "target_width") # Create new tooltip key
+        self.widgets_to_disable_during_processing.append(entry_target_width); row_idx += 1
+
+        # Seed
+        tk.Label(main_params_frame, text="Seed:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        entry_seed = tk.Entry(main_params_frame, textvariable=self.seed, width=18)
+        entry_seed.grid(row=row_idx, column=1, padx=(5,0), pady=2, sticky="w")
+        _create_hover_tooltip(entry_seed, "seed")
+        self.widgets_to_disable_during_processing.append(entry_seed); row_idx += 1
+        
+        # CPU Offload Mode
         tk.Label(main_params_frame, text="CPU Offload Mode:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
         self.combo_cpu_offload = ttk.Combobox(main_params_frame, textvariable=self.cpu_offload, values=["model", "sequential", ""], width=17, state="readonly")
         self.combo_cpu_offload.grid(row=row_idx, column=1, padx=5, pady=2, sticky="w")
-        hl_cpu = self._add_manual_help_icon(main_params_frame, "cpu_offload", row_idx, 2)
-        self.widgets_to_disable_during_processing.extend([self.combo_cpu_offload, hl_cpu]); row_idx += 1
+        _create_hover_tooltip(self.combo_cpu_offload, "cpu_offload")
+        self.widgets_to_disable_during_processing.append(self.combo_cpu_offload); row_idx += 1
 
+        # Enable cuDNN Benchmark
         self.cudnn_benchmark_cb = tk.Checkbutton(main_params_frame, text="Enable cuDNN Benchmark (Nvidia GPU Only)", variable=self.use_cudnn_benchmark)
         self.cudnn_benchmark_cb.grid(row=row_idx, column=0, columnspan=2, sticky="w", padx=(5, 0), pady=2)
-        hl_cudnn = self._add_manual_help_icon(main_params_frame, "cudnn_benchmark", row_idx, 2, sticky="w", padx=(0,5))
-        self.widgets_to_disable_during_processing.extend([self.cudnn_benchmark_cb, hl_cudnn]); row_idx +=1
+        _create_hover_tooltip(self.cudnn_benchmark_cb, "cudnn_benchmark")
+        self.widgets_to_disable_during_processing.append(self.cudnn_benchmark_cb); row_idx +=1
 
+        # Save Sidecar JSON for Final Output
         self.save_final_json_cb = tk.Checkbutton(main_params_frame, text="Save Sidecar JSON for Final Output", variable=self.save_final_output_json_var)
         self.save_final_json_cb.grid(row=row_idx, column=0, columnspan=2, sticky="w", padx=5, pady=2)
-        hl_sfj = self._add_manual_help_icon(main_params_frame, "save_final_json", row_idx, 2, sticky="w", padx=(0,5))
-        self.widgets_to_disable_during_processing.extend([self.save_final_json_cb, hl_sfj]); row_idx +=1
+        _create_hover_tooltip(self.save_final_json_cb, "save_final_json")
+        self.widgets_to_disable_during_processing.append(self.save_final_json_cb); row_idx +=1
 
+        # --- Frame & Segment Control Frame ---
         fs_frame = tk.LabelFrame(top_controls_outer_frame, text="Frame & Segment Control")
         fs_frame.grid(row=0, column=1, padx=(5,10), pady=5, sticky="new")
         top_controls_outer_frame.columnconfigure(0, weight=1)
         top_controls_outer_frame.columnconfigure(1, weight=1)
 
         row_idx = 0 
-        e, hl = self._add_param_with_help(fs_frame, "Window Size:", self.window_size, row_idx, "window_size"); self.widgets_to_disable_during_processing.extend([e, hl]); row_idx += 1
-        e, hl = self._add_param_with_help(fs_frame, "Overlap:", self.overlap, row_idx, "overlap"); self.widgets_to_disable_during_processing.extend([e, hl]); row_idx += 1
-        e, hl = self._add_param_with_help(fs_frame, "Target FPS (-1 Original):", self.target_fps, row_idx, "target_fps"); self.widgets_to_disable_during_processing.extend([e, hl]); row_idx += 1
-        e, hl = self._add_param_with_help(fs_frame, "Process Max Frames (-1 All):", self.process_length, row_idx, "process_length"); self.widgets_to_disable_during_processing.extend([e, hl]); row_idx += 1
+        
+        # Window Size
+        tk.Label(fs_frame, text="Window Size:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        entry_window_size = tk.Entry(fs_frame, textvariable=self.window_size, width=18)
+        entry_window_size.grid(row=row_idx, column=1, padx=(5,0), pady=2, sticky="w")
+        _create_hover_tooltip(entry_window_size, "window_size")
+        self.widgets_to_disable_during_processing.append(entry_window_size); row_idx += 1
+        
+        # Overlap
+        tk.Label(fs_frame, text="Overlap:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        entry_overlap = tk.Entry(fs_frame, textvariable=self.overlap, width=18)
+        entry_overlap.grid(row=row_idx, column=1, padx=(5,0), pady=2, sticky="w")
+        _create_hover_tooltip(entry_overlap, "overlap")
+        self.widgets_to_disable_during_processing.append(entry_overlap); row_idx += 1
+        
+        # Target FPS
+        tk.Label(fs_frame, text="Target FPS (-1 Original):").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        entry_target_fps = tk.Entry(fs_frame, textvariable=self.target_fps, width=18)
+        entry_target_fps.grid(row=row_idx, column=1, padx=(5,0), pady=2, sticky="w")
+        _create_hover_tooltip(entry_target_fps, "target_fps")
+        self.widgets_to_disable_during_processing.append(entry_target_fps); row_idx += 1
+        
+        # Process Max Frames
+        tk.Label(fs_frame, text="Process Max Frames (-1 All):").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        entry_process_length = tk.Entry(fs_frame, textvariable=self.process_length, width=18)
+        entry_process_length.grid(row=row_idx, column=1, padx=(5,0), pady=2, sticky="w")
+        _create_hover_tooltip(entry_process_length, "process_length")
+        self.widgets_to_disable_during_processing.append(entry_process_length); row_idx += 1
+        
+        # Process as Segments
         self.process_as_segments_cb = tk.Checkbutton(fs_frame, text="Process as Segments (Low VRAM Mode)", variable=self.process_as_segments_var, command=self.toggle_merge_related_options_active_state)
         self.process_as_segments_cb.grid(row=row_idx, column=0, columnspan=2, sticky="w", padx=5, pady=2)
-        hl_pas = self._add_manual_help_icon(fs_frame, "process_as_segments", row_idx, 2, sticky="w", padx=(0,5))
-        self.widgets_to_disable_during_processing.extend([self.process_as_segments_cb, hl_pas]); row_idx += 1
+        _create_hover_tooltip(self.process_as_segments_cb, "process_as_segments")
+        self.widgets_to_disable_during_processing.append(self.process_as_segments_cb); row_idx += 1
 
+        # --- Merged Output Options Frame ---
         merge_opts_frame = tk.LabelFrame(self.root, text="Merged Output Options (if segments processed)")
         merge_opts_frame.pack(fill="x", padx=10, pady=5, expand=False)
         merge_opts_frame.columnconfigure(0, minsize=240)
@@ -1010,65 +1039,72 @@ class DepthCrafterGUI:
         self.keep_npz_dependent_widgets = []
         row_idx = 0
 
-        # Keep intermediate NPZ options GUI
+        # Keep intermediate NPZ files
         self.keep_npz_cb = tk.Checkbutton(merge_opts_frame, text="Keep intermediate NPZ files", variable=self.keep_intermediate_npz_var, command=self.toggle_keep_npz_dependent_options_state)
         self.keep_npz_cb.grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
-        hl_knpz = self._add_manual_help_icon(merge_opts_frame, "keep_npz", row_idx, 2, sticky="w", padx=(0,5))
-        self.merge_related_widgets_references.append((self.keep_npz_cb, hl_knpz))
-        self.widgets_to_disable_during_processing.extend([self.keep_npz_cb, hl_knpz]); row_idx += 1
+        _create_hover_tooltip(self.keep_npz_cb, "keep_npz")
+        self.merge_related_widgets_references.append(self.keep_npz_cb)
+        self.widgets_to_disable_during_processing.append(self.keep_npz_cb); row_idx += 1
 
+        # Min Orig. Vid Frames to Keep NPZ
         self.lbl_min_frames_npz = tk.Label(merge_opts_frame, text="  ↳ Min Orig. Vid Frames to Keep NPZ:")
         self.lbl_min_frames_npz.grid(row=row_idx, column=0, sticky="e", padx=(20,2), pady=2)
         self.entry_min_frames_npz = tk.Entry(merge_opts_frame, textvariable=self.min_frames_to_keep_npz_var, width=7)
         self.entry_min_frames_npz.grid(row=row_idx, column=1, padx=(0,2), pady=2, sticky="w")
-        hl_mfn = self._add_manual_help_icon(merge_opts_frame, "min_frames_npz", row_idx, 2, sticky="w", padx=(0,5))
-        self.keep_npz_dependent_widgets.extend([self.lbl_min_frames_npz, self.entry_min_frames_npz, hl_mfn])
-        self.widgets_to_disable_during_processing.extend([self.lbl_min_frames_npz, self.entry_min_frames_npz, hl_mfn]); row_idx += 1
+        _create_hover_tooltip(self.entry_min_frames_npz, "min_frames_npz")
+        self.keep_npz_dependent_widgets.extend([self.lbl_min_frames_npz, self.entry_min_frames_npz])
+        self.widgets_to_disable_during_processing.extend([self.lbl_min_frames_npz, self.entry_min_frames_npz]); row_idx += 1
 
-        # Segment Visual Format options GUI
+        # Segment Visual Format
         self.lbl_intermediate_fmt = tk.Label(merge_opts_frame, text="  ↳ Segment Visual Format:")
         self.lbl_intermediate_fmt.grid(row=row_idx, column=0, sticky="e", padx=(20,2), pady=2)
         combo_intermediate_fmt_values = ["png_sequence", "mp4", "main10_mp4", "none"]
         if OPENEXR_AVAILABLE_GUI: combo_intermediate_fmt_values.extend(["exr_sequence", "exr"])
         self.combo_intermediate_fmt = ttk.Combobox(merge_opts_frame, textvariable=self.keep_intermediate_segment_visual_format_var, values=combo_intermediate_fmt_values, width=17, state="readonly")
         self.combo_intermediate_fmt.grid(row=row_idx, column=1, padx=(0,2), pady=2, sticky="w")
-        hl_sif = self._add_manual_help_icon(merge_opts_frame, "segment_visual_format", row_idx, 2, sticky="w", padx=(0,5))
-        self.keep_npz_dependent_widgets.extend([self.lbl_intermediate_fmt, self.combo_intermediate_fmt, hl_sif])
-        self.widgets_to_disable_during_processing.extend([self.lbl_intermediate_fmt, self.combo_intermediate_fmt, hl_sif]); row_idx += 1
+        _create_hover_tooltip(self.combo_intermediate_fmt, "segment_visual_format")
+        self.keep_npz_dependent_widgets.extend([self.lbl_intermediate_fmt, self.combo_intermediate_fmt])
+        self.widgets_to_disable_during_processing.extend([self.lbl_intermediate_fmt, self.combo_intermediate_fmt]); row_idx += 1
         self.toggle_keep_npz_dependent_options_state()
 
-        # Dithering, Gamma, Percentile Norm options remain the same, ensure row_idx continues correctly
+        # Dithering (MP4)
         self.merge_dither_cb = tk.Checkbutton(merge_opts_frame, text="Dithering (MP4)", variable=self.merge_dither_var, command=self.toggle_dither_options_active_state)
         self.merge_dither_cb.grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
+        _create_hover_tooltip(self.merge_dither_cb, "merge_dither") # Tooltip on checkbox
+        
         dither_details_frame = tk.Frame(merge_opts_frame)
         dither_details_frame.grid(row=row_idx, column=1, sticky="w", padx=(0,0))
         self.lbl_dither_str = tk.Label(dither_details_frame, text="Strength:")
         self.lbl_dither_str.pack(side=tk.LEFT, padx=(0, 2))
         self.entry_dither_str = tk.Entry(dither_details_frame, textvariable=self.merge_dither_strength_var, width=7)
         self.entry_dither_str.pack(side=tk.LEFT, padx=(0, 0))
-        hl_mds = self._add_manual_help_icon(merge_opts_frame, "merge_dither", row_idx, 2, sticky="w", padx=(2,5))
-        self.merge_related_widgets_references.append((self.merge_dither_cb, dither_details_frame, hl_mds))
-        self.widgets_to_disable_during_processing.extend([self.merge_dither_cb, self.lbl_dither_str, self.entry_dither_str, hl_mds]); row_idx += 1
+        _create_hover_tooltip(self.entry_dither_str, "merge_dither_strength") # Tooltip on entry
+        
+        self.merge_related_widgets_references.append((self.merge_dither_cb, dither_details_frame))
+        self.widgets_to_disable_during_processing.extend([self.merge_dither_cb, self.lbl_dither_str, self.entry_dither_str]); row_idx += 1
+        self.toggle_dither_options_active_state() # Call after creation
 
-        # Gamma options GUI
+        # Gamma Correct (MP4)
         self.merge_gamma_cb = tk.Checkbutton(merge_opts_frame, text="Gamma Correct (MP4)", variable=self.merge_gamma_correct_var, command=self.toggle_gamma_options_active_state)
         self.merge_gamma_cb.grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
+        _create_hover_tooltip(self.merge_gamma_cb, "merge_gamma") # Tooltip on checkbox
+        
         gamma_details_frame = tk.Frame(merge_opts_frame)
         gamma_details_frame.grid(row=row_idx, column=1, sticky="w", padx=(0,0))
         self.lbl_gamma_val = tk.Label(gamma_details_frame, text="Value:")
         self.lbl_gamma_val.pack(side=tk.LEFT, padx=(0, 2))
         self.entry_gamma_val = tk.Entry(gamma_details_frame, textvariable=self.merge_gamma_value_var, width=7)
         self.entry_gamma_val.pack(side=tk.LEFT, padx=(0, 0))
-        hl_mgv = self._add_manual_help_icon(merge_opts_frame, "merge_gamma", row_idx, 2, sticky="w", padx=(2,5))
-        self.merge_related_widgets_references.append((self.merge_gamma_cb, gamma_details_frame, hl_mgv))
-        self.widgets_to_disable_during_processing.extend([self.merge_gamma_cb, self.lbl_gamma_val, self.entry_gamma_val, hl_mgv]); row_idx += 1
+        _create_hover_tooltip(self.entry_gamma_val, "merge_gamma_value") # Tooltip on entry
+        
+        self.merge_related_widgets_references.append((self.merge_gamma_cb, gamma_details_frame))
+        self.widgets_to_disable_during_processing.extend([self.merge_gamma_cb, self.lbl_gamma_val, self.entry_gamma_val]); row_idx += 1
+        self.toggle_gamma_options_active_state() # Call after creation
 
-        # Percentile Normalization options GUI
+        # Percentile Normalization
         self.merge_perc_norm_cb = tk.Checkbutton(merge_opts_frame, text="Percentile Normalization", variable=self.merge_percentile_norm_var, command=self.toggle_percentile_norm_options_active_state)
         self.merge_perc_norm_cb.grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
-        hl_mpncb = self._add_manual_help_icon(merge_opts_frame, "merge_percentile_norm", row_idx, 2, sticky="w", padx=(0,5))
-        self.merge_related_widgets_references.append((self.merge_perc_norm_cb, hl_mpncb))
-        self.widgets_to_disable_during_processing.extend([self.merge_perc_norm_cb, hl_mpncb]); row_idx += 1
+        _create_hover_tooltip(self.merge_perc_norm_cb, "merge_percentile_norm") # Tooltip on checkbox
         
         low_high_frame = tk.Frame(merge_opts_frame)
         low_high_frame.grid(row=row_idx, column=1, sticky="w", padx=(0,0))
@@ -1080,101 +1116,120 @@ class DepthCrafterGUI:
         self.lbl_high_perc.pack(side=tk.LEFT, padx=(0,2))
         self.entry_high_perc = tk.Entry(low_high_frame, textvariable=self.merge_norm_high_perc_var, width=7)
         self.entry_high_perc.pack(side=tk.LEFT, padx=(0,0))
-        tk.Label(merge_opts_frame, text="  ↳").grid(row=row_idx, column=0, sticky="e", padx=(20,2))
-        self.merge_related_widgets_references.append((low_high_frame,))
+        tk.Label(merge_opts_frame, text="  ↳").grid(row=row_idx, column=0, sticky="e", padx=(20,2)) # Aligns with the checkbox
+        _create_hover_tooltip(self.entry_low_perc, "merge_norm_low_perc") # Tooltip on entry
+        _create_hover_tooltip(self.entry_high_perc, "merge_norm_high_perc") # Tooltip on entry
+        
+        self.merge_related_widgets_references.append(self.merge_perc_norm_cb) # Add checkbox to references, details frame is managed by toggle
         self.widgets_to_disable_during_processing.extend([self.lbl_low_perc, self.entry_low_perc, self.lbl_high_perc, self.entry_high_perc]); row_idx += 1
-        self.toggle_percentile_norm_options_active_state()
+        self.toggle_percentile_norm_options_active_state() # Call after creation
 
-        # Alignment Method (Moved Output Format below this)
+        # Alignment Method
         lbl_merge_alignment = tk.Label(merge_opts_frame, text="Alignment Method:")
         lbl_merge_alignment.grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
         self.combo_merge_alignment = ttk.Combobox(merge_opts_frame, textvariable=self.merge_alignment_method_var, values=["Shift & Scale", "Linear Blend"], width=17, state="readonly")
         self.combo_merge_alignment.grid(row=row_idx, column=1, padx=(0,2), pady=2, sticky="w")
-        hl_mam = self._add_manual_help_icon(merge_opts_frame, "merge_alignment_method", row_idx, 2, sticky="w", padx=(0,5))
-        self.merge_related_widgets_references.append((lbl_merge_alignment, self.combo_merge_alignment, hl_mam))
-        self.widgets_to_disable_during_processing.extend([lbl_merge_alignment, self.combo_merge_alignment, hl_mam]); row_idx += 1
+        _create_hover_tooltip(self.combo_merge_alignment, "merge_alignment_method")
+        self.merge_related_widgets_references.append((lbl_merge_alignment, self.combo_merge_alignment))
+        self.widgets_to_disable_during_processing.extend([lbl_merge_alignment, self.combo_merge_alignment]); row_idx += 1
         
-        # Output Format (Moved here)
+        # Output Format
         lbl_merge_fmt = tk.Label(merge_opts_frame, text="Output Format:")
         lbl_merge_fmt.grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
         merge_fmt_values = ["mp4", "main10_mp4", "png_sequence"] + (["exr_sequence", "exr"] if OPENEXR_AVAILABLE_GUI else [])
         self.combo_merge_fmt = ttk.Combobox(merge_opts_frame, textvariable=self.merge_output_format_var, values=merge_fmt_values, width=17, state="readonly")
         self.combo_merge_fmt.grid(row=row_idx, column=1, padx=(0,2), pady=2, sticky="w")
-        hl_mof = self._add_manual_help_icon(merge_opts_frame, "merge_output_format", row_idx, 2, sticky="w", padx=(0,5))
-        self.merge_related_widgets_references.append((lbl_merge_fmt, self.combo_merge_fmt, hl_mof))
-        self.widgets_to_disable_during_processing.extend([lbl_merge_fmt, self.combo_merge_fmt, hl_mof]); row_idx += 1
+        _create_hover_tooltip(self.combo_merge_fmt, "merge_output_format")
+        self.merge_related_widgets_references.append((lbl_merge_fmt, self.combo_merge_fmt))
+        self.widgets_to_disable_during_processing.extend([lbl_merge_fmt, self.combo_merge_fmt]); row_idx += 1
 
-        # New: Output Suffix
+        # Output Suffix
         lbl_merge_suffix = tk.Label(merge_opts_frame, text="Output Suffix:")
         lbl_merge_suffix.grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
         self.entry_merge_suffix = tk.Entry(merge_opts_frame, textvariable=self.merge_output_suffix_var, width=18)
         self.entry_merge_suffix.grid(row=row_idx, column=1, padx=(0,2), pady=2, sticky="w")
-        hl_mos = self._add_manual_help_icon(merge_opts_frame, "merge_output_suffix", row_idx, 2, sticky="w", padx=(0,5))
-        self.merge_related_widgets_references.append((lbl_merge_suffix, self.entry_merge_suffix, hl_mos))
-        self.widgets_to_disable_during_processing.extend([lbl_merge_suffix, self.entry_merge_suffix, hl_mos]); row_idx += 1
+        _create_hover_tooltip(self.entry_merge_suffix, "merge_output_suffix")
+        self.merge_related_widgets_references.append((lbl_merge_suffix, self.entry_merge_suffix))
+        self.widgets_to_disable_during_processing.extend([lbl_merge_suffix, self.entry_merge_suffix]); row_idx += 1
         
-        # Removed Merge Log Verbosity (was the last item in this frame)
-        # lbl_merge_verbosity = tk.Label(merge_opts_frame, text="Merge Log Verbosity:")
-        # lbl_merge_verbosity.grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
-        # self.combo_merge_verbosity = ttk.Combobox(...)
-        # self.combo_merge_verbosity.bind("<<ComboboxSelected>>", self._update_gui_verbosity_from_combobox)
-        # hl_mlv = self._add_manual_help_icon(...)
-        # self.merge_related_widgets_references.append((lbl_merge_verbosity, self.combo_merge_verbosity, hl_mlv))
-        # self.widgets_to_disable_during_processing.extend([lbl_merge_verbosity, self.combo_merge_verbosity, hl_mlv]); row_idx += 1
-        
+        # --- Progress Bar and Status ---
         progress_bar_frame = tk.Frame(self.root)
         progress_bar_frame.pack(pady=(10, 0), padx=10, fill="x", expand=False)
+        
         self.progress = ttk.Progressbar(progress_bar_frame, orient="horizontal", length=300, mode="determinate")
         self.progress.pack(fill=tk.X, expand=True, padx=0, pady=0)
 
-        self.status_label = tk.Label(progress_bar_frame, textvariable=self.status_message_var, bd=1, relief=tk.SUNKEN, anchor=tk.W)
+        # Status Label (NEW)
+        self.status_label = tk.Label(progress_bar_frame, textvariable=self.status_message_var, bd=1, relief=tk.SUNKEN, anchor=tk.CENTER)
         self.status_label.pack(fill=tk.X, padx=0, pady=2)
 
+        # --- Control Buttons ---
         ctrl_frame = tk.Frame(self.root)
         ctrl_frame.pack(pady=(5, 10), padx=10, fill="x", expand=False)
+
+        # --- Current Processing Information Frame ---
+        processing_info_frame = tk.LabelFrame(self.root, text="Current Processing Information")
+        processing_info_frame.pack(fill="x", padx=10, pady=5, expand=False)
+        
+        # Grid layout for labels inside this frame
+        processing_info_frame.columnconfigure(0, weight=0) # Labels
+        processing_info_frame.columnconfigure(1, weight=1) # Values
+
+        row_idx = 0
+        # Filename
+        tk.Label(processing_info_frame, text="Filename:").grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
+        lbl_filename = tk.Label(processing_info_frame, textvariable=self.current_filename_var, anchor=tk.W)
+        lbl_filename.grid(row=row_idx, column=1, sticky="ew", padx=5, pady=2)
+        _create_hover_tooltip(lbl_filename, "current_filename") # Add tooltip
+        row_idx += 1
+
+        # Resolution
+        tk.Label(processing_info_frame, text="Resolution:").grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
+        lbl_resolution = tk.Label(processing_info_frame, textvariable=self.current_resolution_var, anchor=tk.W)
+        lbl_resolution.grid(row=row_idx, column=1, sticky="ew", padx=5, pady=2)
+        _create_hover_tooltip(lbl_resolution, "current_resolution") # Add tooltip
+        row_idx += 1
+
+        # Frames
+        tk.Label(processing_info_frame, text="Frames:").grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
+        lbl_frames = tk.Label(processing_info_frame, textvariable=self.current_frames_var, anchor=tk.W)
+        lbl_frames.grid(row=row_idx, column=1, sticky="ew", padx=5, pady=2)
+        _create_hover_tooltip(lbl_frames, "current_frames") # Add tooltip
+        row_idx += 1
 
         start_frame = tk.Frame(ctrl_frame); start_frame.pack(side=tk.LEFT, padx=(0,2))
         self.start_button = tk.Button(start_frame, text="Start", command=self.start_thread, width=10)
         self.start_button.pack(side=tk.LEFT)
+        _create_hover_tooltip(self.start_button, "start_button")        
 
         cancel_frame = tk.Frame(ctrl_frame); cancel_frame.pack(side=tk.LEFT, padx=(2,2))
         self.cancel_button = tk.Button(cancel_frame, text="Cancel", command=self.stop_processing, width=10, state=tk.DISABLED)
         self.cancel_button.pack(side=tk.LEFT)
+        _create_hover_tooltip(self.cancel_button, "cancel_button")
 
         remerge_frame = tk.Frame(ctrl_frame); remerge_frame.pack(side=tk.LEFT, padx=(2,2))
         self.remerge_button = tk.Button(remerge_frame, text="Re-Merge Segments", command=self.re_merge_from_gui, width=18)
         self.remerge_button.pack(side=tk.LEFT)
-        hl_rmb = tk.Label(remerge_frame, text="❓", fg="blue", cursor="hand2")
-        hl_rmb.bind("<Button-1>", lambda e, key="remerge_button": self._show_help_for(key))
-        hl_rmb.pack(side=tk.LEFT, padx=(1,0))
+        _create_hover_tooltip(self.remerge_button, "remerge_button")
 
         genvis_frame = tk.Frame(ctrl_frame); genvis_frame.pack(side=tk.LEFT, padx=(2,2))
         self.generate_visuals_button = tk.Button(genvis_frame, text="Generate Seg Visuals", command=self.generate_segment_visuals_from_gui, width=20)
         self.generate_visuals_button.pack(side=tk.LEFT)
-        hl_gvb = tk.Label(genvis_frame, text="❓", fg="blue", cursor="hand2")
-        hl_gvb.bind("<Button-1>", lambda e, key="generate_visuals_button": self._show_help_for(key))
-        hl_gvb.pack(side=tk.LEFT, padx=(1,0))
+        _create_hover_tooltip(self.generate_visuals_button, "generate_visuals_button")
 
-        # Removed clear log button and log_frame
-        # self.clear_log_button = tk.Button(ctrl_frame, text="Clear Log", command=self._clear_log, width=10)
-        # self.clear_log_button.pack(side=tk.RIGHT, padx=(5,0))
+        # Add "Use Local Models Only" checkbox (as a general option, not merge-related)
+        self.use_local_models_only_cb = tk.Checkbutton(ctrl_frame, text="Local Models Only", variable=self.use_local_models_only_var)
+        self.use_local_models_only_cb.pack(side=tk.RIGHT, padx=(5,0))
+        _create_hover_tooltip(self.use_local_models_only_cb, "use_local_models_only") # Add tooltip here
+        self.widgets_to_disable_during_processing.append(self.use_local_models_only_cb)
+
 
         self.widgets_to_disable_during_processing.extend([
-            self.start_button, self.remerge_button, hl_rmb,
-            self.generate_visuals_button, hl_gvb #, self.clear_log_button # Removed clear_log_button
+            self.start_button, self.remerge_button,
+            self.generate_visuals_button
         ])
 
-        # Removed log_frame and its contents
-        # log_frame = tk.LabelFrame(self.root, text="Log")
-        # log_frame.pack(fill="both", expand=True, padx=10, pady=5)
-        # self.log = tk.Text(log_frame, state="disabled", height=10, wrap=tk.WORD)
-        # log_scroll = tk.Scrollbar(log_frame, command=self.log.yview)
-        # self.log.config(yscrollcommand=log_scroll.set)
-        # log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        # self.log.pack(side=tk.LEFT, fill="both", expand=True)
-        self.toggle_merge_related_options_active_state()
-
-    # Removed _clear_log
+        # self.toggle_merge_related_options_active_state()
 
     def _set_ui_processing_state(self, is_processing: bool):
         new_state = tk.DISABLED if is_processing else tk.NORMAL
@@ -1352,7 +1407,6 @@ class DepthCrafterGUI:
         folder = filedialog.askdirectory(initialdir=self.output_dir.get())
         if folder: self.output_dir.set(os.path.normpath(folder))
 
-    # Removed process_queue
     def process_queue(self):
         # The message queue is still used for progress bar updates
         while not self.message_queue.empty():
@@ -1368,13 +1422,6 @@ class DepthCrafterGUI:
                 _logger.exception(f"Error processing GUI queue: {e}")
         
         self.root.after(100, self.process_queue) # Still schedule, but only for progress/UI state
-
-    def stop_processing(self):
-        if self.processing_thread and self.processing_thread.is_alive():
-            _logger.info("Cancel request received. Processing will stop after current item.")
-            self.stop_event.set()
-        else: 
-            _logger.info("No processing is currently active to cancel.")
 
     def start_thread(self):
         if self.processing_thread and self.processing_thread.is_alive():
@@ -1538,6 +1585,215 @@ class DepthCrafterGUI:
             self.root.after(100, self.process_queue) # Start queue processing for progress updates
         else:
             _logger.info("No videos/segments to process after considering existing data and user choices (or all skipped).")
+
+    def start_processing(self, video_processing_jobs, base_job_info_map):
+        self.stop_event.clear()
+        self.progress["value"] = 0
+        self.progress["maximum"] = len(video_processing_jobs)
+        _logger.info(f"Starting batch processing for {len(video_processing_jobs)} items...")
+        self.status_message_var.set("Starting processing...")
+
+        # Initialize returned_job_specific_metadata before the loop to ensure it's always bound.
+        # This will hold the result of the *last completed job* for display if the loop breaks.
+        returned_job_specific_metadata_last_job = {} 
+        
+        try:
+            # Log model loading strategy
+            if not self.use_local_models_only_var.get():
+                _logger.info("Attempting to load model(s) from Hugging Face Hub (will check local cache first, then download if needed).")
+            else:
+                _logger.info("Attempting to load model(s) from local cache only (Hugging Face Hub network access disabled).")
+
+            demo = DepthCrafterDemo(
+                unet_path="tencent/DepthCrafter",
+                pre_train_path="stabilityai/stable-video-diffusion-img2vid-xt",
+                cpu_offload=self.cpu_offload.get(),
+                use_cudnn_benchmark=self.use_cudnn_benchmark.get(),
+                local_files_only=self.use_local_models_only_var.get()
+            )
+        except Exception as e:
+            _logger.exception(f"CRITICAL: Failed to initialize DepthCrafterDemo: {e}")
+            self.status_message_var.set(f"Error: Model initialization failed. See console.")
+            self.current_filename_var.set("N/A")
+            self.current_resolution_var.set("N/A")
+            self.current_frames_var.set("N/A")
+            return # Exit processing if model initialization fails
+
+        all_videos_master_metadata = {} 
+
+        _logger.info("Scanning input folder: Please wait...")
+        
+        for i, job_info_to_run in enumerate(video_processing_jobs):
+            # Check for cancellation *before* starting a new job item
+            if self.stop_event.is_set():
+                _logger.info("Processing cancelled by user after current item.")
+                self.status_message_var.set("Stopping...")
+                # Reset current processing info display immediately on stop
+                self.current_filename_var.set("N/A")
+                self.current_resolution_var.set("N/A")
+                self.current_frames_var.set("N/A")
+                break # Exit the loop cleanly
+            
+            current_video_path = job_info_to_run["video_path"] 
+            original_basename = job_info_to_run["original_basename"]
+            is_segment_job = job_info_to_run.get("is_segment", False)
+            # --- DEFINE log_msg_prefix EARLIER ---
+            # log_msg_prefix = f"Segment {job_info_to_run.get('segment_id', -1)+1}/{job_info_to_run.get('total_segments', 0)}" if is_segment_job else "Full video".
+            log_msg_prefix = "hello world"
+            # --- END EARLIER DEFINITION ---
+
+            # # --- NOW UPDATE FILENAME VAR WITH log_msg_prefix ---
+            # self.current_filename_var.set(f"{original_basename} ({log_msg_prefix})") 
+            # self.current_resolution_var.set(f"2 test res") 
+            # self.current_frames_var.set(original_basename) 
+            # ---------------------------------------------------
+
+            if current_video_path not in all_videos_master_metadata:
+                current_video_comprehensive_base_info = base_job_info_map.get(current_video_path, {})
+                total_segments_for_this_video_overall = job_info_to_run.get("total_segments") if is_segment_job else 1
+                if total_segments_for_this_video_overall is None and is_segment_job:
+                    _logger.warning(f"Warning: 'total_segments' missing for segment job of {original_basename}. Defaulting to 1 for master_meta init.")
+
+                all_videos_master_metadata[current_video_path] = self._initialize_master_metadata_entry(
+                    original_basename, 
+                    job_info_to_run,
+                    total_segments_for_this_video_overall
+                )
+                
+                pre_existing_successful_segment_metadatas = current_video_comprehensive_base_info.get("pre_existing_successful_jobs", [])
+                if pre_existing_successful_segment_metadatas:
+                    _logger.debug(f"Loading {len(pre_existing_successful_segment_metadatas)} pre-existing successful segment metadata entries for {original_basename} into current run's master data.")
+                    all_videos_master_metadata[current_video_path]["jobs_info"].extend(pre_existing_successful_segment_metadatas)
+                    all_videos_master_metadata[current_video_path]["completed_successful_jobs"] += len(pre_existing_successful_segment_metadatas)
+            
+            master_meta_for_this_vid = all_videos_master_metadata[current_video_path]
+            
+            log_msg_prefix = f"Segment {job_info_to_run.get('segment_id', -1)+1}/{job_info_to_run.get('total_segments', 0)}" if is_segment_job else "Full video"
+            
+            # --- START PROCESSING THIS JOB ---
+            _logger.info(f"Processing {original_basename} - {log_msg_prefix} ({i+1}/{len(video_processing_jobs)})")
+            self.status_message_var.set(f"Processing {i + 1} of {len(video_processing_jobs)}: {original_basename} ({log_msg_prefix})")
+
+            job_successful, current_job_specific_metadata = self._process_single_job(demo, job_info_to_run, master_meta_for_this_vid)
+            
+            # Ensure current_job_specific_metadata is always a dictionary (even if empty)
+            if current_job_specific_metadata is None:
+                _logger.error(f"Error: _process_single_job for {original_basename} returned None metadata. Initializing to empty dict.")
+                current_job_specific_metadata = {}
+            
+            # Store for potential final display if the loop breaks after this job
+            returned_job_specific_metadata_last_job = current_job_specific_metadata 
+
+            self.message_queue.put(("progress", i + 1)) # Update progress bar
+
+            # --- Update Current Processing Information Display (NOW that metadata is available) ---
+            self.current_filename_var.set(original_basename)
+            
+            # RESOLUTION UPDATE (prioritizing processed resolution)
+            processed_h = current_job_specific_metadata.get("processed_height", "N/A_meta")
+            processed_w = current_job_specific_metadata.get("processed_width", "N/A_meta")
+            
+            display_res = "N/A_final"
+            if processed_h != "N/A_meta" and processed_w != "N/A_meta":
+                display_res = f"{processed_w}x{processed_h}"
+            else:
+                # Fallback to original dimensions if processed not available (and mark it as original)
+                original_h = job_info_to_run.get("original_height", "N/A_job")
+                original_w = job_info_to_run.get("original_width", "N/A_job")
+                _logger.debug(f"DEBUG GUI UPDATE: Metadata reports original_h='{original_h}', original_w='{original_w}' (fallback)")
+                if original_h != "N/A_job" and original_w != "N/A_job":
+                    display_res = f"{original_w}x{original_h} (Original)"
+            self.current_resolution_var.set(display_res)
+            _logger.debug(f"DEBUG GUI UPDATE: Resolution set to '{self.current_resolution_var.get()}'")
+            
+            # FRAMES UPDATE (showing job-specific frames with context)
+            processed_frames_for_job = current_job_specific_metadata.get("frames_in_output_video", "N/A_meta")
+            total_frames_orig_vid = job_info_to_run.get('original_video_raw_frame_count', 'N/A_job')
+            _logger.debug(f"DEBUG GUI UPDATE: Metadata reports processed_frames_for_job='{processed_frames_for_job}', total_frames_orig_vid='{total_frames_orig_vid}'")
+
+            display_frames_str = "N/A_final"
+
+            if processed_frames_for_job != "N/A_meta":
+                is_segment_job_in_info = job_info_to_run.get("is_segment", False)
+                
+                if is_segment_job_in_info:
+                    window_size_setting = job_info_to_run.get("gui_desired_output_window_frames", "N/A_job")
+                    overlap_size_setting = job_info_to_run.get("gui_desired_output_overlap_frames", "N/A_job")
+                    _logger.debug(f"DEBUG GUI UPDATE: Segment info: window='{window_size_setting}', overlap='{overlap_size_setting}'")
+                    
+                    if window_size_setting != "N/A_job" and overlap_size_setting != "N/A_job":
+                         display_frames_str = f"{processed_frames_for_job} ({window_size_setting}W/{overlap_size_setting}O)"
+                    else:
+                         display_frames_str = f"{processed_frames_for_job} (Segment)"
+
+                    if total_frames_orig_vid != "N/A_job" and str(processed_frames_for_job) != str(total_frames_orig_vid):
+                         display_frames_str += f" of {total_frames_orig_vid} total"
+                    
+                else: # Full video processing
+                    display_frames_str = f"{processed_frames_for_job}"
+                    if total_frames_orig_vid != "N/A_job" and str(processed_frames_for_job) != str(total_frames_orig_vid):
+                        display_frames_str += f" (of {total_frames_orig_vid} total)"
+            
+            self.current_frames_var.set(display_frames_str)
+            _logger.debug(f"DEBUG GUI UPDATE: Frames set to '{self.current_frames_var.get()}'")
+            # --- ADD THIS LINE TO FORCE GUI REFRESH ---
+            self.root.update_idletasks() 
+            # ------------------------------------------
+            _logger.debug(f"DEBUG GUI UPDATE: Forced Tkinter update_idletasks().")
+            # --- END Current Processing Information Display Update ---
+
+            # Update job info for master metadata
+            if is_segment_job and "segment_id" not in current_job_specific_metadata:
+                current_job_specific_metadata["segment_id"] = job_info_to_run.get("segment_id", -1)
+            
+            if "_individual_metadata_path" in current_job_specific_metadata:
+                del current_job_specific_metadata["_individual_metadata_path"]
+            
+            master_meta_for_this_vid["jobs_info"].append(current_job_specific_metadata)
+            
+            if job_successful:
+                master_meta_for_this_vid["completed_successful_jobs"] += 1
+            else:
+                master_meta_for_this_vid["completed_failed_jobs"] += 1
+                
+            total_accounted_for_vid = master_meta_for_this_vid["completed_successful_jobs"] + master_meta_for_this_vid["completed_failed_jobs"]
+            
+            if total_accounted_for_vid >= master_meta_for_this_vid["total_expected_jobs"]:
+                self._finalize_video_processing(current_video_path, original_basename, master_meta_for_this_vid)
+
+        # --- Final cleanup and status update after the loop finishes (or breaks) ---
+        if not self.stop_event.is_set(): # If loop completed without explicit stop request
+            _logger.info("All processing jobs complete!")
+            self.status_message_var.set("Processing Finished.")
+        # If stop_event was set, status_message_var would have been set to "Stopping..." inside the loop's break condition.
+        
+        # Reset current processing info display
+        self.current_filename_var.set("N/A_fin")
+        self.current_resolution_var.set("N/A_fin")
+        self.current_frames_var.set("N/A_fin")
+
+        # Demo object and CUDA cache cleanup
+        if 'demo' in locals() and demo is not None:
+            try:
+                if hasattr(demo, 'pipe') and demo.pipe is not None:
+                    if hasattr(demo.pipe, 'vae') and demo.pipe.vae is not None: del demo.pipe.vae
+                    if hasattr(demo.pipe, 'unet') and demo.pipe.unet is not None: del demo.pipe.unet
+                    del demo.pipe
+                del demo
+                _logger.debug("DepthCrafter model components released.")
+            except Exception as e_cleanup:
+                _logger.warning(f"Error during DepthCrafter model cleanup: {e_cleanup}")
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            _logger.info("CUDA cache cleared.")
+
+    def stop_processing(self):
+        if self.processing_thread and self.processing_thread.is_alive():
+            _logger.info("Cancel request received. Processing will stop after current item.")
+            self.stop_event.set()
+        else: 
+            _logger.info("No processing is currently active to cancel.")
 
     def _start_processing_wrapper(self, video_processing_jobs, base_job_info_map):
         try: 
@@ -1842,7 +2098,7 @@ class DepthCrafterGUI:
 
 if __name__ == "__main__":
     # Configure basic logging for console output
-    logging.basicConfig(level=logging.INFO, # Default to INFO level
+    logging.basicConfig(level=logging.DEBUG, # Default to INFO level
                         format='%(asctime)s - %(message)s',
                         datefmt='%H:%M:%S')
 

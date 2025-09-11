@@ -118,15 +118,14 @@ def get_sidecar_json_filename(base_filepath_with_ext: str) -> str:
     """Returns the corresponding .json sidecar filename for a given base file."""
     return os.path.splitext(base_filepath_with_ext)[0] + ".json"
 
-
 def define_video_segments(
-    video_path_or_folder: str, # Path to video, image sequence folder, or single image
+    video_path_or_folder: str,
     original_basename: str,
     gui_target_fps_setting: int,
     gui_process_length_overall: int,
     gui_segment_output_window_frames: int,
     gui_segment_output_overlap_frames: int,
-    source_type: str # "video_file", "image_sequence_folder", "single_image_file"
+    source_type: str
 ) -> Tuple[List[dict], Optional[dict]]:
     """
     Defines video segments based on input parameters.
@@ -141,14 +140,25 @@ def define_video_segments(
 
     total_raw_frames_in_original_video = 0
     original_video_fps = 30.0
+    original_h, original_w = 0, 0 # <--- Initialize here
 
     if source_type == "video_file":
         try:
-            vr = VideoReader(video_path_or_folder, ctx=cpu(0))
-            total_raw_frames_in_original_video = len(vr)
-            original_video_fps = vr.get_avg_fps()
-            del vr
+            # Use a temporary VideoReader instance just to get dimensions and FPS reliably
+            temp_vr_for_meta = VideoReader(video_path_or_folder, ctx=cpu(0))
+            total_raw_frames_in_original_video = len(temp_vr_for_meta)
+            original_video_fps = temp_vr_for_meta.get_avg_fps()
+            
+            # Get H, W from the first frame
+            if total_raw_frames_in_original_video > 0:
+                first_frame_shape = temp_vr_for_meta.get_batch([0]).shape
+                original_h, original_w = first_frame_shape[1], first_frame_shape[2]
+            else:
+                _logger.warning(f"Segment Definition for {original_basename}: Video has no frames. Setting H,W to 0.")
+
+            del temp_vr_for_meta # Clean up
             gc.collect()
+
             if original_video_fps <= 0:
                 _logger.warning(f"Segment Definition for {original_basename}: Invalid original FPS ({original_video_fps}) from video. Assuming 30 FPS.")
                 original_video_fps = 30.0
@@ -162,27 +172,28 @@ def define_video_segments(
             return [], None
         total_raw_frames_in_original_video = count
         original_video_fps = fps
+        original_h, original_w = h, w # <--- Assign h, w here
     elif source_type == "single_image_file":
-        count, fps, h, w = get_single_image_metadata( 
-            video_path_or_folder, 
-            gui_target_fps_setting
-        )
+        count, fps, h, w = get_single_image_metadata(video_path_or_folder, gui_target_fps_setting)
         if count is None:
             _logger.error(f"Segment Definition for {original_basename}: Error getting metadata for single image {video_path_or_folder}")
             return [], None
         total_raw_frames_in_original_video = count
         original_video_fps = fps
+        original_h, original_w = h, w # <--- Assign h, w here
     else:
         _logger.error(f"Segment Definition for {original_basename}: Unknown source_type: {source_type}")
         return [], None
 
     base_job_info_for_video = {
-        "video_path": video_path_or_folder, # This is the source path
-        "source_type": source_type, # Store the type
-        "gui_fps_setting_at_definition": gui_target_fps_setting, # Store the GUI FPS setting used
+        "video_path": video_path_or_folder,
+        "source_type": source_type, 
+        "gui_fps_setting_at_definition": gui_target_fps_setting,
         "original_basename": original_basename,
         "original_video_raw_frame_count": total_raw_frames_in_original_video,
-        "original_video_fps": original_video_fps, # This is the effective FPS
+        "original_video_fps": original_video_fps,
+        "original_height": original_h, # <--- Add to base_job_info
+        "original_width": original_w,  # <--- Add to base_job_info
     }
 
     fps_for_stride_calc = original_video_fps
@@ -272,7 +283,6 @@ def define_video_segments(
         
     return segment_jobs, base_job_info_for_video
 
-
 def normalize_video_data(
     video_data: np.ndarray,
     use_percentile_norm: bool,
@@ -317,7 +327,6 @@ def normalize_video_data(
     _logger.debug(f"Normalization: Global min/max after final clip: {np.min(normalized_video):.4f} / {np.max(normalized_video):.4f}")
     return normalized_video
 
-
 def apply_gamma_correction_to_video(
     video_data: np.ndarray,
     gamma_value: float
@@ -334,7 +343,6 @@ def apply_gamma_correction_to_video(
         _logger.debug(f"Gamma value {actual_gamma:.2f} (effectively 1.0), no gamma transform applied.")
     return processed_video
 
-
 def apply_dithering_to_video(
     video_data: np.ndarray,
     dither_strength_factor: float
@@ -349,7 +357,6 @@ def apply_dithering_to_video(
     
     _logger.debug(f"Applying dithering to video. Strength factor: {dither_strength_factor:.2f}, Dither range: {dither_range:.4f}")
     return processed_video
-
 
 def load_json_file(filepath: str) -> Optional[dict]:
     """Loads data from a JSON file."""
@@ -385,7 +392,7 @@ def save_json_file(data: dict, filepath: str, indent: int = 4) -> bool:
         _logger.error(f"Failed to save: {filepath}. Reason: Unexpected error: {e}")
     return False
 
-def read_video_frames(video_path, process_length, target_fps, max_res, dataset="open",
+def read_video_frames(video_path, process_length, target_fps, target_height: int, target_width: int, dataset="open",
                       start_frame_index=0, num_frames_to_load=-1) -> Tuple[np.ndarray, float, int, int]:
     original_height, original_width = 0, 0
     original_video_fps = 30.0 # Default
@@ -420,43 +427,10 @@ def read_video_frames(video_path, process_length, target_fps, max_res, dataset="
     if original_height == 0 or original_width == 0: # Check if metadata read failed to get dimensions
         _logger.error(f"Video Read: Could not obtain original dimensions for '{video_path}' during metadata scan. Cannot proceed with dimension calculation.")
         return np.array([]), (target_fps if target_fps != -1 else original_video_fps), 0, 0
-
-
-    if dataset == "open":
-        height = round(original_height / 64) * 64
-        width = round(original_width / 64) * 64
-        if max_res > 0 and max(height, width) > max_res : # Check if max_res is positive AND if calculated H/W exceeds it
-            # Check if original_height or original_width is zero before division
-            if original_height == 0 or original_width == 0:
-                _logger.error(f"Video Read: Original dimension is zero for '{video_path}', cannot calculate scale for resizing. Falling back to 64x64.")
-                height = 64 
-                width = 64
-            else:
-                scale = max_res / max(original_height, original_width) # Use original_height/width for scaling basis
-                height = round(original_height * scale / 64) * 64
-                width = round(original_width * scale / 64) * 64
-    else:
-        if dataset in dataset_res_dict:
-            height = dataset_res_dict[dataset][0]
-            width = dataset_res_dict[dataset][1]
-        else:
-            _logger.warning(f"Video Read: Unknown dataset '{dataset}'. Using 'open' logic for resolution.")
-            # Fallback to 'open' style calculation if dataset is unknown
-            height = round(original_height / 64) * 64
-            width = round(original_width / 64) * 64
-            if max_res > 0 and max(height, width) > max_res:
-                if original_height == 0 or original_width == 0:
-                    _logger.error(f"Video Read: Original dimension is zero for '{video_path}', cannot calculate scale for resizing. Falling back to 64x64.")
-                    height = 64
-                    width = 64
-                else:
-                    scale = max_res / max(original_height, original_width)
-                    height = round(original_height * scale / 64) * 64
-                    width = round(original_width * scale / 64) * 64
     
     # Ensure height and width are at least 64 (or some minimum)
-    height = max(64, int(height))
-    width = max(64, int(width))
+    height = max(64, round(target_height / 64) * 64)
+    width = max(64, round(target_width / 64) * 64)
 
     try:
         # Initialize VideoReader with the calculated target height and width
@@ -600,7 +574,6 @@ def save_video(video_frames: Union[List[np.ndarray], List[PIL.Image.Image], np.n
         raise
     return output_video_path
 
-
 class ColorMapper:
     def __init__(self, colormap: str = "inferno"):
         self.colormap_name = colormap
@@ -639,7 +612,6 @@ class ColorMapper:
         image_long = torch.clamp(image_long, 0, len(cmap_data) - 1)
         colored_image = cmap_data[image_long]
         return colored_image
-
 
 def vis_sequence_depth(depths: np.ndarray, v_min=None, v_max=None, colormap: str = "inferno"):
     if not isinstance(depths, np.ndarray):
@@ -822,7 +794,7 @@ def save_depth_visual_as_single_exr_util(
 def read_image_sequence_as_frames(
     folder_path: str,
     num_frames_to_load: int, # Renamed from process_length for clarity (this is for the specific segment/call)
-    max_res: int,
+    target_height: int, target_width: int,
     start_index: int = 0    # New parameter: the starting frame index for this segment
 ) -> Tuple[Optional[np.ndarray], Optional[int], Optional[int]]:
     """Reads a segment of an image sequence from a folder into a NumPy array."""
@@ -858,7 +830,6 @@ def read_image_sequence_as_frames(
         _logger.warning(f"Image Sequence Load: No image frames found for segment in '{folder_path}' (start: {start_index}, num_to_load: {num_frames_to_load}, end_calc: {end_index}, total_in_folder: {len(all_image_paths_sorted)}).")
         return None, None, None
 
-
     loaded_frames_list = []
     original_h, original_w = 0, 0 # For the first frame of the *sequence* (not necessarily segment)
     target_h, target_w = 0, 0   # Target dimensions after resizing
@@ -866,21 +837,9 @@ def read_image_sequence_as_frames(
     # Get original dimensions from the very first image of the sequence for consistent resizing
     # This is important if segments are processed independently and need same target res.
     try:
-        # Use the first image of the *entire sequence* to determine original H, W for scaling
-        first_image_of_sequence = imageio.v2.imread(all_image_paths_sorted[0]) 
-        ref_h, ref_w = first_image_of_sequence.shape[:2]
-
-        # Calculate target_h, target_w based on max_res and this reference frame
-        current_h_ref, current_w_ref = ref_h, ref_w
-        if max_res > 0 and max(current_h_ref, current_w_ref) > max_res:
-            scale = max_res / max(current_h_ref, current_w_ref)
-            target_h = round(current_h_ref * scale / 64) * 64
-            target_w = round(current_w_ref * scale / 64) * 64
-        else:
-            target_h = round(current_h_ref / 64) * 64
-            target_w = round(current_w_ref / 64) * 64
-        target_h = max(64, target_h)
-        target_w = max(64, target_w)
+        # Calculate target_h, target_w based on direct inputs, ensuring divisibility by 64 and min size
+        target_h = max(64, round(target_height / 64) * 64)
+        target_w = max(64, round(target_width / 64) * 64)
         
         # Store the originally detected H,W of the sequence (not the target)
         original_h, original_w = ref_h, ref_w
@@ -918,27 +877,20 @@ def read_image_sequence_as_frames(
     _logger.debug(f"Image Sequence Load: Successfully loaded {frames_array.shape[0]} frames from '{folder_path}' (H:{frames_array.shape[1]}, W:{frames_array.shape[2]}, Segment Start Idx: {start_index}).")
     return frames_array, original_h, original_w
 
-
 def create_frames_from_single_image(
     image_path: str, 
     num_frames_to_generate: int, 
-    max_res: int
+    target_height: int, target_width: int
 ) -> Tuple[Optional[np.ndarray], Optional[int], Optional[int]]: # frames, original_h, original_w
     """Creates a sequence of identical frames from a single image."""
     try:
         img_arr = imageio.v2.imread(image_path)
         original_h, original_w = img_arr.shape[:2]
 
-        current_h, current_w = original_h, original_w
-        if max_res > 0 and max(current_h, current_w) > max_res:
-            scale = max_res / max(current_h, current_w)
-            target_h = round(current_h * scale / 64) * 64
-            target_w = round(current_w * scale / 64) * 64
-        else:
-            target_h = round(current_h / 64) * 64
-            target_w = round(current_w / 64) * 64
-        target_h = max(64, target_h)
-        target_w = max(64, target_w)
+        target_h = max(64, round(target_height / 64) * 64)
+        target_w = max(64, round(target_width / 64) * 64)
+        # target_h = max(64, target_h)
+        # target_w = max(64, target_w)
 
         if img_arr.shape[0] != target_h or img_arr.shape[1] != target_w:
             pil_img = PIL.Image.fromarray(img_arr)

@@ -96,7 +96,7 @@ class DepthCrafterDemo:
         return actual_save_folder_for_output, output_filename_for_meta, full_save_path
 
     def _initialize_job_metadata(self, guidance_scale: float, num_denoising_steps: int,
-                                    user_max_res_for_read: int, seed_val: int,
+                                    user_target_height: int, user_target_width: int, seed_val: int,
                                     target_fps_for_read: float, segment_job_info: Optional[dict],
                                     output_filename_for_meta: str, pipe_call_window_size: int,
                                     pipe_call_overlap: int,
@@ -105,7 +105,8 @@ class DepthCrafterDemo:
             "original_video_basename": original_video_basename, 
             "guidance_scale": float(guidance_scale),
             "inference_steps": int(num_denoising_steps),
-            "max_res_during_process": int(user_max_res_for_read),
+            "target_height_during_process": int(user_target_height),
+            "target_width_during_process": int(user_target_width),
             "seed": int(seed_val),
             "target_fps_setting": float(target_fps_for_read),
             "status": "pending",
@@ -134,7 +135,8 @@ class DepthCrafterDemo:
                      video_path_or_job_info: Union[str, dict],
                      frames_array_if_provided: Optional[np.ndarray],
                      process_length_for_read: int,
-                     user_max_res_for_read: int,
+                     user_target_height: int,
+                     user_target_width: int,
                      segment_job_info: Optional[dict],
                      job_specific_metadata: dict
                      ) -> Tuple[Optional[np.ndarray], float]:
@@ -171,7 +173,8 @@ class DepthCrafterDemo:
                 video_path_for_read, 
                 process_length=process_length_for_read if not segment_job_info else -1,
                 target_fps=target_fps_for_video_read,
-                max_res=user_max_res_for_read, 
+                target_height=user_target_height,
+                target_width=user_target_width, 
                 dataset="open",
                 start_frame_index=start_frame_idx, 
                 num_frames_to_load=num_frames_to_load_for_seg
@@ -204,7 +207,8 @@ class DepthCrafterDemo:
                 frames_this_segment, h, w = read_image_sequence_as_frames(
                     folder_path=source_path,
                     num_frames_to_load=num_img_to_load_for_segment, 
-                    max_res=user_max_res_for_read,
+                    target_height=user_target_height,
+                    target_width=user_target_width,
                     start_index=start_idx_for_segment
                 )
                 actual_frames_to_process = frames_this_segment
@@ -217,7 +221,8 @@ class DepthCrafterDemo:
                 frames_this_segment, h, w = create_frames_from_single_image(
                     image_path=source_path,
                     num_frames_to_generate=num_frames_gen,
-                    max_res=user_max_res_for_read
+                    target_height=user_target_height,
+                    target_width=user_target_width
                 )
                 actual_frames_to_process = frames_this_segment
                 original_h_loaded, original_w_loaded = h, w
@@ -271,7 +276,8 @@ class DepthCrafterDemo:
     def _perform_inference(self, actual_frames_to_process: np.ndarray,
                            guidance_scale: float, num_denoising_steps: int,
                            pipe_call_window_size: int, pipe_call_overlap: int,
-                           segment_job_info: Optional[dict]) -> np.ndarray:
+                           segment_job_info: Optional[dict],
+                           user_target_height: int, user_target_width: int) -> np.ndarray:
         current_pipe_window_for_call = pipe_call_window_size
         current_pipe_overlap_for_call = pipe_call_overlap
         if segment_job_info: 
@@ -282,8 +288,8 @@ class DepthCrafterDemo:
         with torch.inference_mode():
             res = self.pipe(
                 actual_frames_to_process,
-                height=actual_frames_to_process.shape[1],
-                width=actual_frames_to_process.shape[2],
+                height=user_target_height,
+                width=user_target_width,
                 output_type="np",
                 guidance_scale=guidance_scale,
                 num_inference_steps=num_denoising_steps,
@@ -437,7 +443,8 @@ class DepthCrafterDemo:
                         video_path_or_job_info_dict: Union[str, dict],
                         frames_array_if_provided: Optional[np.ndarray],
                         num_denoising_steps: int, guidance_scale: float,
-                        base_output_folder: str, user_max_res_for_read: int,
+                        base_output_folder: str,
+                        user_target_height: int, user_target_width: int,
                         seed_val: int, original_video_basename: str,
                         process_length_for_read: int, gui_target_fps_for_job: float,
                         pipe_call_window_size: int, pipe_call_overlap: int,
@@ -455,7 +462,7 @@ class DepthCrafterDemo:
             self._setup_paths(base_output_folder, original_video_basename, segment_job_info)
 
         job_specific_metadata = self._initialize_job_metadata(
-            guidance_scale, num_denoising_steps, user_max_res_for_read, seed_val,
+            guidance_scale, num_denoising_steps, user_target_height, user_target_width, seed_val,
             gui_target_fps_for_job,
             segment_job_info, output_filename_for_meta,
             pipe_call_window_size, pipe_call_overlap, original_video_basename
@@ -465,7 +472,8 @@ class DepthCrafterDemo:
             video_path_or_job_info=video_path_or_job_info_dict,
             frames_array_if_provided=frames_array_if_provided,
             process_length_for_read=process_length_for_read,
-            user_max_res_for_read=user_max_res_for_read,
+            user_target_height=user_target_height,
+            user_target_width=user_target_width,
             segment_job_info=segment_job_info,
             job_specific_metadata=job_specific_metadata
         )
@@ -487,8 +495,17 @@ class DepthCrafterDemo:
 
         inference_result = self._perform_inference(
             actual_frames_to_process, guidance_scale, num_denoising_steps,
-            pipe_call_window_size, pipe_call_overlap, segment_job_info
-        )
+            pipe_call_window_size, pipe_call_overlap, segment_job_info,
+            user_target_height, user_target_width
+            )
+
+        if inference_result is not None and inference_result.ndim >= 3: # Should be (T, H, W)
+            job_specific_metadata["processed_height"] = inference_result.shape[1]
+            job_specific_metadata["processed_width"] = inference_result.shape[2]
+        else:
+            _logger.warning(f"Inference result was not valid for dimension extraction. Inference_result shape: {inference_result.shape if inference_result is not None else 'None'}")
+            job_specific_metadata["processed_height"] = "N/A"
+            job_specific_metadata["processed_width"] = "N/A"
 
         saved_output_successfully = False
         if segment_job_info:
@@ -530,8 +547,8 @@ class DepthCrafterDemo:
             video_path_or_frames_or_info: Union[str, np.ndarray, dict],
             num_denoising_steps: int, guidance_scale: float,
             base_output_folder: str, gui_window_size: int, gui_overlap: int,
-            process_length_for_read_full_video: int, max_res: int, seed: int,
-            original_video_basename_override: Optional[str] = None,
+            process_length_for_read_full_video: int, target_height: int, target_width: int, 
+            seed: int, original_video_basename_override: Optional[str] = None,
             segment_job_info_param: Optional[dict] = None,
             keep_intermediate_npz_config: bool = False,
             intermediate_segment_visual_format_config: str = "none",
@@ -603,7 +620,8 @@ class DepthCrafterDemo:
             frames_array_if_provided=frames_array_input,
             num_denoising_steps=num_denoising_steps, guidance_scale=guidance_scale,
             base_output_folder=base_output_folder,
-            user_max_res_for_read=max_res, seed_val=seed,
+            user_target_width=target_width, user_target_height=target_height, 
+            seed_val=seed,
             original_video_basename=original_basename_for_job,
             process_length_for_read=effective_process_length_for_infer,
             gui_target_fps_for_job=gui_fps_setting_for_job,
