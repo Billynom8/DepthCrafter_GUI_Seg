@@ -50,7 +50,7 @@ CVPR 2025， **Highlight**
 3.  **GUI Log Verbosity Control:** Removed combobox for setting log verbosity.
 4.  **"❓" Help Icons:** Replaced by new tooltip system.
 
-Also moved helper files into Dependenacy folder
+Also moved helper files into depthcrafter sub-folder
 
 *   `[25-06-01]` 
 
