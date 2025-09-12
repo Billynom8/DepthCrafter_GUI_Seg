@@ -95,7 +95,7 @@ class Tooltip:
         self.tooltip_window = None
         
 class DepthCrafterGUI:
-    CONFIG_FILENAME = "config.json"
+    CONFIG_FILENAME = "config_depthcrafter.json"
     HELP_CONTENT_FILENAME = os.path.join("depthcrafter", "help_content.json")
     MOVE_ORIGINAL_TO_FINISHED_FOLDER_ON_COMPLETION = True
     SETTINGS_FILETYPES = [("JSON files", "*.json"), ("All files", "*.*")]
