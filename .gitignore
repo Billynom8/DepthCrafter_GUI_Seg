@@ -170,3 +170,4 @@ eval/
 *.DS_Store
 benchmark/datasets
 !help_content.json
+config_depthcrafter.json
