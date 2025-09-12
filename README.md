@@ -30,6 +30,28 @@ CVPR 2025， **Highlight**
 
 
 ## GUI Update
+
+*   `[25-09-12]` 
+
+**Added Features:**
+
+1.  **GUI Status Bar:** Added dynamic text updates below progress bar.
+2.  **Current Processing Info Frame:** Display for filename, resolution, frames of current job.
+3.  **"Local Models Only" Menu Option:** Checkbox to force local model loading only.
+4.  **"Restore Finished/Failed Input Files" Menu:** Restores original source videos.
+5.  **Independent Height/Width GUI Inputs:** Replaced `max_res` control.
+6.  **Robust FPS/Frame Count:** Integrated `ffprobe` for accurate frame rate read from source.
+7.  **Tooltip Help System:** Replaced "❓" icons with mouse-over tooltips.
+
+**Removed Features:**
+
+1.  **Custom `message_catalog.py`:** Entirely deleted.
+2.  **GUI Log Window (`tk.Text` widget):** Removed internal log display.
+3.  **GUI Log Verbosity Control:** Removed combobox for setting log verbosity.
+4.  **"❓" Help Icons:** Replaced by new tooltip system.
+
+Also moved helper files into Dependenacy folder
+
 *   `[25-06-01]` 
 
     *   Image sequence loading.
@@ -40,7 +62,7 @@ CVPR 2025， **Highlight**
 ## GUI for Enhanced Workflow (Community Contribution)
 
 <div align="center">
-  <img src="https://raw.githubusercontent.com/Billynom8/DepthCrafter_GUI_Seg/main/tools/image.png" alt="DepthCrafter GUI" width="600" />
+  <img src="https://raw.githubusercontent.com/Billynom8/DepthCrafter_GUI_Seg/main/tools/gui_image_25.09.12.png" alt="DepthCrafter GUI" width="600" />
 </div>
 
 A graphical user interface (GUI) has been added to DepthCrafter to simplify batch processing, manage videos requiring segmentation (e.g., for low VRAM environments or very long videos), and streamline the output process.

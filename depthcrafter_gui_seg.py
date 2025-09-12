@@ -668,7 +668,7 @@ class DepthCrafterGUI:
             _logger.info(f"Skipped moving original source '{original_basename}' (single file/sequence mode).")
 
     def _move_original_source(self, current_video_path: str, original_basename: str, target_subfolder: str):
-        _logger.info(f"Attempting to move original source '{original_basename}' to '{target_subfolder}' folder.")
+        _logger.info(f"Moving original source '{original_basename}' to '{target_subfolder}' folder.")
         try:
             path_from_gui_input_field = self.input_dir_or_file_var.get()
 
@@ -699,7 +699,7 @@ class DepthCrafterGUI:
                     _logger.info(f"Move Original: Destination already exists. Renaming '{dest_filename}' to '{new_dest_name}'.")
                 
                 shutil.move(current_video_path, dest_path)
-                _logger.info(f"Successfully moved original source '{dest_filename}' to '{target_subfolder}' folder.")
+                _logger.debug(f"Successfully moved original source '{dest_filename}' to '{target_subfolder}' folder.")
             else:
                 _logger.warning(f"Move Original: Source path to move does not exist: {current_video_path}")
         except Exception as e:
@@ -839,7 +839,7 @@ class DepthCrafterGUI:
     def _cleanup_segment_folder(self, segment_subfolder_path, original_basename, master_meta):
         del_folder = False
         if not self.keep_intermediate_npz_var.get():
-            _logger.info(f"Deleting intermediate segment subfolder for {original_basename} (Keep NPZ unchecked)...")
+            _logger.debug(f"Deleting intermediate segment subfolder for {original_basename} (Keep NPZ unchecked)...")
             del_folder = True
         else:
             min_frames = self.min_frames_to_keep_npz_var.get()
@@ -856,7 +856,7 @@ class DepthCrafterGUI:
             if os.path.exists(segment_subfolder_path):
                 try: 
                     shutil.rmtree(segment_subfolder_path)
-                    _logger.info(f"  Successfully deleted segment subfolder for {original_basename}.")
+                    _logger.debug(f"Successfully deleted segment subfolder for {original_basename}.")
                 except Exception as e:
                     _logger.error(f"  Error deleting segment subfolder {segment_subfolder_path}: {e}")
             else:
@@ -1556,7 +1556,7 @@ class DepthCrafterGUI:
                     source_path, base_name, segment_subfolder_path, all_potential_segments_for_video,
                     current_video_base_info_ref
                 )
-                _logger.info(f"For video '{base_name}': Action '{action_taken}', {len(segments_for_this_video)} segments will be processed.")
+                _logger.debug(f"For video '{base_name}': Action '{action_taken}', {len(segments_for_this_video)} segments will be processed.")
                 if segments_for_this_video:
                     final_jobs_to_process.extend(segments_for_this_video)
             
@@ -1605,9 +1605,9 @@ class DepthCrafterGUI:
         try:
             # Log model loading strategy
             if not self.use_local_models_only_var.get():
-                _logger.info("Attempting to load model(s) from Hugging Face Hub (will check local cache first, then download if needed).")
+                _logger.info("Attempting to check model at Hugging Face Hub against local.")
             else:
-                _logger.info("Attempting to load model(s) from local cache only (Hugging Face Hub network access disabled).")
+                _logger.info("Attempting to load local model.")
 
             demo = DepthCrafterDemo(
                 unet_path="tencent/DepthCrafter",
@@ -1707,7 +1707,8 @@ class DepthCrafterGUI:
             
             master_meta_for_this_vid = all_videos_master_metadata[current_video_path]
             
-            _logger.info(f"Processing {original_basename} - {log_msg_prefix} ({i+1}/{len(video_processing_jobs)})")
+            # _logger.info(f"Processing {original_basename} - {log_msg_prefix} ({i+1}/{len(video_processing_jobs)})")
+            _logger.info(f"Processing {original_basename} - {log_msg_prefix}")
             self.status_message_var.set(f"Processing {i + 1} of {len(video_processing_jobs)}")
 
             job_successful, current_job_specific_metadata = self._process_single_job(demo, job_info_to_run, master_meta_for_this_vid)
@@ -2110,7 +2111,7 @@ class DepthCrafterGUI:
 
 if __name__ == "__main__":
     # Configure basic logging for console output
-    logging.basicConfig(level=logging.DEBUG, # Default to INFO level
+    logging.basicConfig(level=logging.INFO, # Default to INFO level
                         format='%(asctime)s - %(message)s',
                         datefmt='%H:%M:%S')
 

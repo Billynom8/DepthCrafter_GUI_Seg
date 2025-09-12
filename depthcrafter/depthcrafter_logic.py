@@ -70,7 +70,7 @@ class DepthCrafterDemo:
                 _logger.warning(f"Unknown CPU offload option '{cpu_offload}'. Defaulting to 'model'.")
                 self.pipe.enable_model_cpu_offload() # Defaulting
             self.pipe.enable_attention_slicing()
-            _logger.info("DepthCrafterPipeline initialized successfully.")
+            _logger.debug("DepthCrafterPipeline initialized successfully.")
         except Exception as e:
             _logger.critical(f"CRITICAL: Failed to initialize DepthCrafterPipeline: {e}", exc_info=True)
             raise # Re-raise after logging

@@ -75,7 +75,7 @@ def _load_and_validate_metadata(master_meta_path: str):
         raise ValueError("No successful segments found in metadata to merge.")
         
     sorted_jobs_info = sorted(successful_jobs_info, key=lambda x: x.get("segment_id", -1))
-    _logger.info(f"Found {len(sorted_jobs_info)} successful segments to process from metadata.")
+    _logger.debug(f"Found {len(sorted_jobs_info)} successful segments to process from metadata.")
     base_dir = os.path.dirname(master_meta_path) if master_meta_path and os.path.dirname(master_meta_path) else "."
     return meta_data, N_overlap_from_meta, sorted_jobs_info, base_dir
 
@@ -371,7 +371,7 @@ def _save_output_to_disk(video_data: np.ndarray, save_path: str, out_format: str
             for i, frame_f in enumerate(video_data):
                 frame_u16 = (np.clip(frame_f, 0, 1) * 65535.0).astype(np.uint16)
                 imageio.imwrite(os.path.join(save_path, f"frame_{i:05d}.png"), frame_u16)
-            _logger.info(f"Successfully saved {len(video_data)} PNGs in {save_path}")
+            _logger.debug(f"Successfully saved {len(video_data)} PNGs in {save_path}")
         elif out_format == "exr_sequence":
             if not _HAS_OPENEXR:
                 _logger.warning("OpenEXR/Imath libraries not found. EXR sequence save skipped.")
@@ -398,10 +398,10 @@ def _save_output_to_disk(video_data: np.ndarray, save_path: str, out_format: str
                 _logger.warning("No frames available to save as single EXR.")
         elif out_format == "mp4":
             dc_utils.save_video(video_data, save_path, fps=fps_val, output_format="mp4")
-            _logger.info(f"Successfully saved MP4: {save_path}")
+            _logger.debug(f"Successfully saved MP4: {save_path}")
         elif out_format == "main10_mp4":
             dc_utils.save_video(video_data, save_path, fps=fps_val, output_format="main10_mp4")
-            _logger.info(f"Successfully saved HEVC Main10 MP4: {save_path}")
+            _logger.debug(f"Successfully saved HEVC Main10 MP4: {save_path}")
         else:
             _logger.error(f"Unknown output format for saving: {out_format}")
             raise ValueError(f"Unknown output format for saving: {out_format}")
@@ -437,10 +437,10 @@ def merge_depth_segments(
         meta_data, N_overlap, sorted_jobs, base_dir = _load_and_validate_metadata(master_meta_path)
 
         if len(sorted_jobs) == 1:
-            _logger.info("Processing as single segment (only one valid segment found).")
+            _logger.debug("Processing as single segment (only one valid segment found).")
             final_video_unclipped, final_fps = _load_single_segment_frames(sorted_jobs[0], base_dir)
         else:
-            _logger.info(f"Processing {len(sorted_jobs)} segments.")
+            _logger.debug(f"Processing {len(sorted_jobs)} segments.")
             loaded_frames_list, job_meta_map, initial_fps = _load_multiple_segments_data(sorted_jobs, base_dir)
             final_fps = initial_fps 
 

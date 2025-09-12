@@ -494,7 +494,7 @@ def read_video_frames(
     the actual output FPS, original video height/width, actual processed height/width,
     and video stream metadata.
     """
-    _logger.info(f"Reading video: {os.path.basename(video_path)}")
+    _logger.debug(f"Reading video: {os.path.basename(video_path)}")
 
     # --- REPLACEMENT BLOCK START ---
     # Get video stream info: first try cached, then call ffprobe if not cached.
@@ -571,7 +571,7 @@ def read_video_frames(
     # Ensure they are multiples of 64 and at least 64
     final_height_for_decord = max(64, round(target_height / 64) * 64)
     final_width_for_decord = max(64, round(target_width / 64) * 64)
-    _logger.info(f"Targeting final processing resolution (rounded to mult of 64): {final_width_for_decord}x{final_height_for_decord}")
+    _logger.debug(f"Targeting final processing resolution (rounded to mult of 64): {final_width_for_decord}x{final_height_for_decord}")
 
     try:
         vid_reader = VideoReader(video_path, ctx=cpu(0), width=final_width_for_decord, height=final_height_for_decord)
@@ -621,7 +621,7 @@ def read_video_frames(
     # The actual processed height/width are what Decord delivered, which should be final_height/width
     actual_processed_height = frames_numpy.shape[1]
     actual_processed_width = frames_numpy.shape[2]
-    _logger.info(f"Read {len(frames_idx)} frames. Original: {original_width_detected}x{original_height_detected}, Decord Processing: {actual_processed_width}x{actual_processed_height} (Final).")
+    _logger.debug(f"Read {len(frames_idx)} frames. Original: {original_width_detected}x{original_height_detected}, Decord Processing: {actual_processed_width}x{actual_processed_height} (Final).")
 
     return frames_numpy, actual_output_fps, original_height_detected, original_width_detected, actual_processed_height, actual_processed_width, video_stream_info, ffprobe_raw_stdout
 
