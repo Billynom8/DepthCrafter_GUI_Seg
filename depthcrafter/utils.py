@@ -14,6 +14,7 @@ import json # Added for JSON utilities
 import gc # Added for define_video_segments
 import glob # For read_image_sequence_as_frames
 import logging # Import standard logging
+import subprocess
 
 # Configure a logger for this module
 _logger = logging.getLogger(__name__)
@@ -67,7 +68,7 @@ def get_full_video_output_filename(original_video_basename: str, extension: str 
     """Returns the standard filename for a full video output."""
     return f"{original_video_basename}_depth.{extension}"
 
-def get_image_sequence_metadata(folder_path: str, target_fps_from_gui: int) -> Tuple[Optional[int], Optional[float], Optional[int], Optional[int]]:
+def get_image_sequence_metadata(folder_path: str, target_fps_from_gui: int) -> Tuple[Optional[int], Optional[float], Optional[int], Optional[int], Optional[int]]:
     """Gets metadata (frame count, fps, H, W) for an image sequence."""
     supported_exts = (".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".exr")
     # Use glob for better pattern matching and case-insensitivity if needed, or stick to listdir for simplicity
@@ -80,43 +81,129 @@ def get_image_sequence_metadata(folder_path: str, target_fps_from_gui: int) -> T
 
     if not frames:
         _logger.warning(f"Image Sequence: No compatible image files found in folder '{folder_path}'. Supported extensions: {str(supported_exts)}.")
-        return None, None, None, None
+        return None, None, None, None, None
 
     try:
         first_frame_img = imageio.v2.imread(frames[0])
         h, w = first_frame_img.shape[:2]
     except Exception as e:
         _logger.error(f"Image Read Error: Could not read image file '{frames[0]}'. Error: {e}.")
-        return None, None, None, None
+        return None, None, None, None, None
 
     total_frames = len(frames)
     effective_fps = float(target_fps_from_gui) if target_fps_from_gui != -1 else 24.0
     _logger.debug(f"Image Sequence Metadata: Folder '{folder_path}', Frames: {total_frames}, Effective FPS: {effective_fps:.2f}, H: {h}, W: {w}.")
-    return total_frames, effective_fps, h, w
+    return total_frames, effective_fps, h, w, None
 
 def get_single_image_metadata(
     image_path: str, 
-    target_fps_from_gui: int
-) -> Tuple[Optional[int], Optional[float], Optional[int], Optional[int]]:
+    gui_target_fps_setting: int
+) -> Tuple[Optional[int], Optional[float], Optional[int], Optional[int], Optional[dict]]:
     """Gets metadata for a single image. Frame count uses DEFAULT_SINGLE_IMAGE_CLIP_FRAMES."""
     try:
-        img = imageio.v2.imread(image_path) # Or your preferred image loading
+        img = imageio.v2.imread(image_path)
         h, w = img.shape[:2]
     except Exception as e:
         _logger.error(f"Image Read Error: Could not read image file '{image_path}'. Error: {e}.")
-        return None, None, None, None
+        return None, None, None, None, None
 
-    effective_fps = float(target_fps_from_gui) if target_fps_from_gui != -1 else 24.0
-    
-    # Use the globally defined constant from this utils.py file
+    effective_fps = float(gui_target_fps_setting) if gui_target_fps_setting != -1 else 24.0
     num_generated_frames = DEFAULT_SINGLE_IMAGE_CLIP_FRAMES
 
     _logger.debug(f"Single Image Metadata: File '{image_path}', Frames for 1s clip: {num_generated_frames}, Effective FPS: {effective_fps:.2f}, H: {h}, W: {w}.")
-    return num_generated_frames, effective_fps, h, w
+    return num_generated_frames, effective_fps, h, w, None # Return None for stream_info
 
 def get_sidecar_json_filename(base_filepath_with_ext: str) -> str:
     """Returns the corresponding .json sidecar filename for a given base file."""
     return os.path.splitext(base_filepath_with_ext)[0] + ".json"
+
+def get_video_stream_info(video_path: str) -> Optional[dict]:
+    """
+    Extracts comprehensive video stream metadata using ffprobe.
+    Returns a dict with relevant color properties, codec, pixel format, and HDR mastering metadata
+    or None if ffprobe fails/info not found.
+    Requires ffprobe to be installed and in PATH.
+    This function *does not* show messageboxes; the caller should handle errors.
+    """
+    cmd = [
+        "ffprobe",
+        "-v", "error",
+        "-select_streams", "v:0", # Select the first video stream
+        "-show_entries", "stream=codec_name,profile,pix_fmt,color_primaries,transfer_characteristics,color_space,"
+        "r_frame_rate,width,height,nb_frames,duration,side_data_list", # Consolidated all relevant stream entries
+        "-of", "json",
+        video_path
+    ]
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, encoding='utf-8', timeout=60)
+        raw_stdout = result.stdout # <--- Capture stdout
+        data = json.loads(raw_stdout) # <--- Use captured stdout
+        # No debug print of raw stdout here
+        
+        stream_info = {}
+        
+        # --- Extract Stream Information ---
+        # The -select_streams v:0 and consolidated -show_entries should give us one video stream here
+        if "streams" in data and len(data["streams"]) > 0:
+            s = data["streams"][0] # Focus on the first video stream (which should be v:0)
+            
+            # Directly extract the fields we need. Use .get() for safety.
+            stream_info["codec_name"] = s.get("codec_name")
+            stream_info["profile"] = s.get("profile")
+            stream_info["pix_fmt"] = s.get("pix_fmt")
+            stream_info["color_primaries"] = s.get("color_primaries")
+            stream_info["transfer_characteristics"] = s.get("transfer_characteristics")
+            stream_info["color_space"] = s.get("color_space")
+            stream_info["r_frame_rate"] = s.get("r_frame_rate")
+            stream_info["width"] = s.get("width")
+            stream_info["height"] = s.get("height")
+            stream_info["nb_frames"] = s.get("nb_frames")
+            stream_info["duration"] = s.get("duration") # Duration might be here too with this syntax
+            
+            # HDR mastering display and CLL metadata (from side_data_list within the stream)
+            if s.get("side_data_list"):
+                for sd in s["side_data_list"]:
+                    if sd.get("side_data_type") == "Mastering display metadata":
+                        stream_info["mastering_display_metadata"] = sd.get("mastering_display_metadata")
+                    if sd.get("side_data_type") == "Content light level metadata":
+                        stream_info["max_content_light_level"] = sd.get("max_content_light_level")
+
+        # --- Guess nb_frames from duration * r_frame_rate if nb_frames is still missing/zero ---
+        if not stream_info.get("nb_frames") or int(stream_info.get("nb_frames", "0")) == 0:
+            if stream_info.get("duration") and stream_info.get("r_frame_rate"):
+                try:
+                    duration_f = float(stream_info["duration"])
+                    r_frame_rate_str = stream_info["r_frame_rate"].split('/')
+                    if len(r_frame_rate_str) == 2 and float(r_frame_rate_str[1]) != 0:
+                        fps_val = float(r_frame_rate_str[0]) / float(r_frame_rate_str[1])
+                    else:
+                        fps_val = float(r_frame_rate_str[0])
+                    # Only guess if duration is reasonable and fps is not zero
+                    if duration_f > 0 and fps_val > 0:
+                        stream_info["nb_frames"] = str(round(duration_f * fps_val))
+                        _logger.debug(f"Guessed nb_frames from duration*fps: {stream_info['nb_frames']}")
+                except (ValueError, TypeError, ZeroDivisionError):
+                    pass # Couldn't guess
+
+        # Filter out empty strings/None values and values '0' or '0.0'
+        filtered_info = {k: v for k, v in stream_info.items() if v is not None and str(v).strip() not in ["N/A", "und", "unknown", "0", "0.0"]}
+        
+        return (filtered_info, raw_stdout) if filtered_info else (None, raw_stdout)
+
+    except subprocess.CalledProcessError as e:
+        _logger.error(f"ffprobe failed for {video_path} (return code {e.returncode}):\n{e.stderr}")
+        return None
+    except subprocess.TimeoutExpired:
+        _logger.error(f"ffprobe timed out for {video_path}.")
+        return None
+    except json.JSONDecodeError as e:
+        _logger.error(f"Failed to parse ffprobe output for {video_path}: {e}. Raw output might be malformed JSON.")
+        _logger.debug(f"Raw ffprobe stdout (if available): {result.stdout if 'result' in locals() else 'N/A'}")
+        return None
+    except Exception as e:
+        _logger.error(f"An unexpected error occurred with ffprobe for {video_path}: {e}", exc_info=True)
+        return None
 
 def define_video_segments(
     video_path_or_folder: str,
@@ -125,62 +212,58 @@ def define_video_segments(
     gui_process_length_overall: int,
     gui_segment_output_window_frames: int,
     gui_segment_output_overlap_frames: int,
-    source_type: str
+    source_type: str,
+    gui_target_height_setting: int, # New: Pass GUI H/W settings
+    gui_target_width_setting: int   # New: Pass GUI H/W settings
 ) -> Tuple[List[dict], Optional[dict]]:
     """
     Defines video segments based on input parameters.
-    Returns:
-        A tuple containing:
-        - A list of segment job dictionaries.
-        - A base job info dictionary (common details for the video).
-          Returns None for base_job_info if metadata read fails.
     """
     segment_jobs = []
     base_job_info_for_video = {}
 
     total_raw_frames_in_original_video = 0
     original_video_fps = 30.0
-    original_h, original_w = 0, 0 # <--- Initialize here
+    original_h_detected, original_w_detected = 0, 0 # From source (ffprobe/imageio)
 
     if source_type == "video_file":
-        try:
-            # Use a temporary VideoReader instance just to get dimensions and FPS reliably
-            temp_vr_for_meta = VideoReader(video_path_or_folder, ctx=cpu(0))
-            total_raw_frames_in_original_video = len(temp_vr_for_meta)
-            original_video_fps = temp_vr_for_meta.get_avg_fps()
-            
-            # Get H, W from the first frame
-            if total_raw_frames_in_original_video > 0:
-                first_frame_shape = temp_vr_for_meta.get_batch([0]).shape
-                original_h, original_w = first_frame_shape[1], first_frame_shape[2]
-            else:
-                _logger.warning(f"Segment Definition for {original_basename}: Video has no frames. Setting H,W to 0.")
+        # Call the new read_video_frames just to get metadata without loading all frames
+        # Use dummy target_height/width for this metadata read, as we only need original dimensions and FPS.
+        # This will call ffprobe/decord internally.
+        frames_numpy_dummy, fps_detected, h_orig, w_orig, _, _, video_stream_info_from_ffprobe, _ = read_video_frames(
+            video_path_or_folder,
+            process_length=-1, # Don't limit frames here
+            target_fps=-1.0,   # Get the original FPS
+            target_height=128, target_width=128, # Dummy values for metadata extraction
+            start_frame_index=0,
+            num_frames_to_load=-1 # Get total frames
+        )
+        total_raw_frames_in_original_video = frames_numpy_dummy.shape[0] if frames_numpy_dummy is not None else 0
+        original_video_fps = fps_detected if fps_detected is not None and fps_detected > 0 else 24.0
+        original_h_detected, original_w_detected = h_orig, w_orig
 
-            del temp_vr_for_meta # Clean up
-            gc.collect()
-
-            if original_video_fps <= 0:
-                _logger.warning(f"Segment Definition for {original_basename}: Invalid original FPS ({original_video_fps}) from video. Assuming 30 FPS.")
-                original_video_fps = 30.0
-        except Exception as e:
-            _logger.error(f"Segment Definition for {original_basename}: Error getting metadata of video {video_path_or_folder}: {e}")
-            return [], None
+        if original_video_fps <= 0:
+            _logger.warning(f"Segment Definition for {original_basename}: Invalid original FPS ({original_video_fps}) from video. Assuming 30 FPS.")
+            original_video_fps = 30.0
     elif source_type == "image_sequence_folder":
-        count, fps, h, w = get_image_sequence_metadata(video_path_or_folder, gui_target_fps_setting)
+        count, fps, h_orig, w_orig, _ = get_image_sequence_metadata(video_path_or_folder, gui_target_fps_setting)
         if count is None:
             _logger.error(f"Segment Definition for {original_basename}: Error getting metadata for image sequence folder {video_path_or_folder}")
             return [], None
         total_raw_frames_in_original_video = count
-        original_video_fps = fps
-        original_h, original_w = h, w # <--- Assign h, w here
+        original_video_fps = fps if fps is not None and fps > 0 else 24.0
+        original_h_detected, original_w_detected = h_orig, w_orig
     elif source_type == "single_image_file":
-        count, fps, h, w = get_single_image_metadata(video_path_or_folder, gui_target_fps_setting)
+        count, fps, h_orig, w_orig, _ = get_single_image_metadata( 
+            video_path_or_folder, 
+            gui_target_fps_setting
+        )
         if count is None:
             _logger.error(f"Segment Definition for {original_basename}: Error getting metadata for single image {video_path_or_folder}")
             return [], None
         total_raw_frames_in_original_video = count
-        original_video_fps = fps
-        original_h, original_w = h, w # <--- Assign h, w here
+        original_video_fps = fps if fps is not None and fps > 0 else 24.0
+        original_h_detected, original_w_detected = h_orig, w_orig
     else:
         _logger.error(f"Segment Definition for {original_basename}: Unknown source_type: {source_type}")
         return [], None
@@ -192,8 +275,11 @@ def define_video_segments(
         "original_basename": original_basename,
         "original_video_raw_frame_count": total_raw_frames_in_original_video,
         "original_video_fps": original_video_fps,
-        "original_height": original_h, # <--- Add to base_job_info
-        "original_width": original_w,  # <--- Add to base_job_info
+        "original_height": original_h_detected, # Use detected original height
+        "original_width": original_w_detected,  # Use detected original width
+        "video_stream_ffprobe_info": video_stream_info_from_ffprobe if source_type == "video_file" else None,
+        "gui_target_height_setting": gui_target_height_setting, # Store GUI's target H/W
+        "gui_target_width_setting": gui_target_width_setting,
     }
 
     fps_for_stride_calc = original_video_fps
@@ -392,120 +478,152 @@ def save_json_file(data: dict, filepath: str, indent: int = 4) -> bool:
         _logger.error(f"Failed to save: {filepath}. Reason: Unexpected error: {e}")
     return False
 
-def read_video_frames(video_path, process_length, target_fps, target_height: int, target_width: int, dataset="open",
-                      start_frame_index=0, num_frames_to_load=-1) -> Tuple[np.ndarray, float, int, int]:
-    original_height, original_width = 0, 0
-    original_video_fps = 30.0 # Default
-    total_frames_in_video = 0 # Default
+def read_video_frames(
+    video_path: str,
+    process_length: int = -1,
+    target_fps: float = -1.0,
+    target_height: int = 512,
+    target_width: int = 768,
+    start_frame_index: int = 0,
+    num_frames_to_load: int = -1,
+    cached_ffprobe_info: Optional[dict] = None
+) -> Tuple[np.ndarray, float, int, int, int, int, Optional[dict], Optional[str]]:
+    """
+    Reads video frames using decord, optionally resizing and downsampling frame rate.
+    Returns frames as a 4D float32 numpy array [T, H, W, C] normalized to 0-1,
+    the actual output FPS, original video height/width, actual processed height/width,
+    and video stream metadata.
+    """
+    _logger.info(f"Reading video: {os.path.basename(video_path)}")
+
+    # --- REPLACEMENT BLOCK START ---
+    # Get video stream info: first try cached, then call ffprobe if not cached.
+    video_stream_info_actual = None
+    ffprobe_raw_stdout = None # Initialize to None
+
+    if cached_ffprobe_info:
+        # If cached, it's a dict. We assume it doesn't contain raw stdout.
+        video_stream_info_actual = cached_ffprobe_info 
+        _logger.debug(f"Reusing cached ffprobe info for {os.path.basename(video_path)} (skipping ffprobe call).")
+    else:
+        # If not cached, call get_video_stream_info which returns (dict, str)
+        ffprobe_result_tuple = get_video_stream_info(video_path)
+        if ffprobe_result_tuple:
+            video_stream_info_actual, ffprobe_raw_stdout = ffprobe_result_tuple
+            _logger.debug(f"FFprobe called for {os.path.basename(video_path)} (no cached info available).")
+            _logger.debug(f"DEBUG: Raw ffprobe stdout for {os.path.basename(video_path)}:\n{ffprobe_raw_stdout}") # <-- PRINT RAW STDOUT HERE, ONLY ONCE
+        else:
+            _logger.warning(f"Failed to get video stream info for {os.path.basename(video_path)}.")
+            # video_stream_info_actual remains None
+    
+    # Now use video_stream_info_actual for all subsequent logic in read_video_frames
+    video_stream_info = video_stream_info_actual # Renaming for consistency with existing code
+
+    original_height_detected = 0
+    original_width_detected = 0
+    original_fps_detected = 0.0
+    num_total_frames_detected = 0
+
+    if video_stream_info:
+        try:
+            original_width_detected = int(video_stream_info.get("width", 0))
+            original_height_detected = int(video_stream_info.get("height", 0))
+            num_total_frames_detected = int(video_stream_info.get("nb_frames", 0))
+            
+            r_frame_rate_str = video_stream_info.get("r_frame_rate", "0/1").split('/')
+            if len(r_frame_rate_str) == 2 and float(r_frame_rate_str[1]) != 0:
+                original_fps_detected = float(r_frame_rate_str[0]) / float(r_frame_rate_str[1])
+            elif len(r_frame_rate_str) == 1:
+                original_fps_detected = float(r_frame_rate_str[0])
+            _logger.debug(f"FFprobe detected: {original_width_detected}x{original_height_detected} @ {original_fps_detected:.2f} FPS, {num_total_frames_detected} frames.")
+        except (ValueError, TypeError, ZeroDivisionError) as e:
+            _logger.warning(f"Failed to parse ffprobe stream info for {os.path.basename(video_path)}: {e}. Falling back to Decord for metadata.")
+            video_stream_info = None # Invalidate ffprobe info to force Decord fallback
+    
+    # If ffprobe failed or parsing failed, use Decord as a fallback for initial metadata
+    if not video_stream_info:
+        try:
+            temp_reader = VideoReader(video_path, ctx=cpu(0))
+            num_total_frames_detected = len(temp_reader)
+            if num_total_frames_detected > 0:
+                first_frame_shape = temp_reader.get_batch([0]).shape
+                original_height_detected = first_frame_shape[1]
+                original_width_detected = first_frame_shape[2]
+            original_fps_detected = temp_reader.get_avg_fps()
+            del temp_reader
+            gc.collect()
+            _logger.debug(f"Decord fallback detected: {original_width_detected}x{original_height_detected} @ {original_fps_detected:.2f} FPS, {num_total_frames_detected} frames.")
+        except Exception as e:
+            _logger.error(f"Failed to get initial metadata from Decord for {os.path.basename(video_path)}: {e}", exc_info=True)
+            return np.empty((0, 0, 0, 0), dtype=np.float32), 0.0, 0, 0, 0, 0, None
+
+    if num_total_frames_detected == 0:
+        _logger.warning(f"No frames detected in {os.path.basename(video_path)}.")
+        return np.empty((0, 0, 0, 0), dtype=np.float32), 0.0, original_height_detected, original_width_detected, 0, 0, video_stream_info
+
+    if original_height_detected == 0 or original_width_detected == 0:
+        _logger.warning(f"Original dimensions could not be detected for {os.path.basename(video_path)}. Setting to default 128x128.")
+        original_height_detected = 128
+        original_width_detected = 128
+
+
+    # Determine height/width for Decord based on GUI's target_height/width
+    # Ensure they are multiples of 64 and at least 64
+    final_height_for_decord = max(64, round(target_height / 64) * 64)
+    final_width_for_decord = max(64, round(target_width / 64) * 64)
+    _logger.info(f"Targeting final processing resolution (rounded to mult of 64): {final_width_for_decord}x{final_height_for_decord}")
 
     try:
-        temp_vid_for_meta = VideoReader(video_path, ctx=cpu(0))
-        if len(temp_vid_for_meta) > 0:
-            first_frame_data = temp_vid_for_meta.get_batch([0])
-            if first_frame_data is not None and first_frame_data.shape[0] > 0:
-                 original_height, original_width = first_frame_data.shape[1:3]
-            else:
-                _logger.warning(f"Video Read Metadata: Could not get frame data from '{video_path}' (possibly corrupt or empty first frame).")
-                return np.array([]), (target_fps if target_fps != -1 else 30), 0, 0
-        else:
-            _logger.warning(f"Video Read Metadata: Video '{video_path}' has zero length.")
-            return np.array([]), (target_fps if target_fps != -1 else 30), 0, 0
-
-        original_video_fps = temp_vid_for_meta.get_avg_fps()
-        if original_video_fps <= 0: # Handle invalid FPS from metadata
-            _logger.warning(f"Video Read: Invalid FPS ({original_video_fps}) from metadata for '{video_path}'. Falling back to 30.0 FPS.")
-            original_video_fps = 30.0 # Fallback
-        total_frames_in_video = len(temp_vid_for_meta)
-        del temp_vid_for_meta
-        gc.collect() # Added gc.collect after del
+        vid_reader = VideoReader(video_path, ctx=cpu(0), width=final_width_for_decord, height=final_height_for_decord)
     except Exception as e:
-        _logger.error(f"Error reading video metadata for {video_path}: {e}")
-        return np.array([]), (target_fps if target_fps != -1 else 30), 0, 0
+        _logger.error(f"Failed to initialize Decord VideoReader for {os.path.basename(video_path)} with target resolution {final_width_for_decord}x{final_height_for_decord}: {e}", exc_info=True)
+        return np.empty((0, 0, 0, 0), dtype=np.float32), 0.0, original_height_detected, original_width_detected, 0, 0, video_stream_info
 
-    # Resolution calculation logic (moved here, before VideoReader init with target dims)
-    # These 'height' and 'width' are the TARGET dimensions for VideoReader
-    if original_height == 0 or original_width == 0: # Check if metadata read failed to get dimensions
-        _logger.error(f"Video Read: Could not obtain original dimensions for '{video_path}' during metadata scan. Cannot proceed with dimension calculation.")
-        return np.array([]), (target_fps if target_fps != -1 else original_video_fps), 0, 0
-    
-    # Ensure height and width are at least 64 (or some minimum)
-    height = max(64, round(target_height / 64) * 64)
-    width = max(64, round(target_width / 64) * 64)
+    # Determine output FPS: prioritize GUI target, then ffprobe, then decord
+    actual_output_fps = original_fps_detected if target_fps == -1.0 else target_fps
+    if actual_output_fps <= 0:
+        actual_output_fps = 23.976 # Hardcoded fallback if all else fails
+        _logger.warning(f"Could not determine valid FPS for {os.path.basename(video_path)}. Falling back to {actual_output_fps:.2f} FPS.")
 
-    try:
-        # Initialize VideoReader with the calculated target height and width
-        vid = VideoReader(video_path, ctx=cpu(0), width=width, height=height)
-    except Exception as e:
-        _logger.error(f"Error initializing VideoReader with target dimensions for {video_path}: {e} (target H:{height}, W:{width})")
-        return np.array([]), (target_fps if target_fps != -1 else original_video_fps), original_height, original_width
+    # No specific FPS snapping here; ffprobe's original resolution is kept or user target is used.
+    # mediapy typically handles standard fractional FPS values well.
 
-    # FPS and Stride Calculation
-    actual_fps_for_save = original_video_fps if target_fps == -1 else target_fps
-    if actual_fps_for_save <= 0: 
-        actual_fps_for_save = original_video_fps if original_video_fps > 0 else 23.976
-    
-    # Snap to common FPS values or round to prevent non-standard FPS from decord
-    if target_fps == -1: # Only snap if user explicitly requested original FPS
-        # Common FPS values to snap to
-        common_fps_values = [23.976, 24.0, 25.0, 29.97, 30.0, 48.0, 50.0, 59.94, 60.0]
-        
-        # Find the closest common FPS
-        closest_fps = min(common_fps_values, key=lambda x: abs(x - actual_fps_for_save))
-        
-        # If the closest is within a small threshold, use it. Otherwise, round.
-        if abs(closest_fps - actual_fps_for_save) < 0.1: # 0.1 tolerance
-            actual_fps_for_save = closest_fps
-            _logger.debug(f"Snapped original FPS from {original_video_fps:.3f} to common FPS {actual_fps_for_save:.3f}.")
-        else:
-            # If not close to a common FPS, just round to 2 decimal places as a general cleanup
-            actual_fps_for_save = round(actual_fps_for_save, 2)
-            _logger.debug(f"Rounded original FPS from {original_video_fps:.3f} to {actual_fps_for_save:.2f}.")
-
+    # Stride calculation based on detected original FPS and final output FPS
     stride = 1
-    if original_video_fps > 0 and actual_fps_for_save > 0:
-        stride = round(original_video_fps / actual_fps_for_save)
-    stride = max(stride, 1) # Stride must be at least 1
+    if original_fps_detected > 0 and actual_output_fps > 0:
+        stride = max(round(original_fps_detected / actual_output_fps), 1)
     
-    # Frame Index Calculation
-    effective_num_frames_in_source_segment = num_frames_to_load
-    if num_frames_to_load == -1: # Read until end of video from start_frame_index
-        effective_num_frames_in_source_segment = total_frames_in_video - start_frame_index
+    _logger.debug(f"FPS: Original {original_fps_detected:.2f}, Target Output {actual_output_fps:.2f}, Stride {stride}.")
+
+
+    # Determine the end frame for this segment/full video
+    end_frame_exclusive = num_total_frames_detected
+    if num_frames_to_load != -1: # If segment or process_length limit from GUI
+        end_frame_exclusive = min(start_frame_index + num_frames_to_load, num_total_frames_detected)
+
+    # Generate indices respecting start_frame_index, num_frames_to_load, and stride
+    frames_idx = list(range(start_frame_index, end_frame_exclusive, stride))
+
+    if process_length != -1 and process_length < len(frames_idx): # Overall process_length limit from GUI
+        frames_idx = frames_idx[:process_length]
+        _logger.info(f"Limiting to {len(frames_idx)} frames based on process_length parameter.")
     
-    # Ensure effective_num_frames_in_source_segment is not negative
-    effective_num_frames_in_source_segment = max(0, effective_num_frames_in_source_segment)
+    if not frames_idx:
+        _logger.warning(f"No frames selected for processing after stride and process_length filters for {os.path.basename(video_path)}.")
+        return np.empty((0, 0, 0, 0), dtype=np.float32), 0.0, original_height_detected, original_width_detected, final_height_for_decord, final_width_for_decord, video_stream_info
 
-    segment_end_frame_exclusive = min(start_frame_index + effective_num_frames_in_source_segment, total_frames_in_video)
-    
-    if start_frame_index >= segment_end_frame_exclusive :
-        _logger.warning(f"Segment for {video_path} from frame {start_frame_index} for {num_frames_to_load} frames is empty or invalid.")
-        return np.array([]), actual_fps_for_save, original_height, original_width
+    _logger.debug(f"Loading {len(frames_idx)} frames using Decord for {os.path.basename(video_path)}.")
+    frames_batch = vid_reader.get_batch(frames_idx)
+    frames_numpy = frames_batch.asnumpy().astype("float32") / 255.0 # Normalize to 0-1 float32
+    del vid_reader
+    gc.collect()
 
-    source_indices_for_segment = list(range(start_frame_index, segment_end_frame_exclusive))
+    # The actual processed height/width are what Decord delivered, which should be final_height/width
+    actual_processed_height = frames_numpy.shape[1]
+    actual_processed_width = frames_numpy.shape[2]
+    _logger.info(f"Read {len(frames_idx)} frames. Original: {original_width_detected}x{original_height_detected}, Decord Processing: {actual_processed_width}x{actual_processed_height} (Final).")
 
-    if not source_indices_for_segment:
-        _logger.warning(f"No source indices for segment of {video_path}.")
-        return np.array([]), actual_fps_for_save, original_height, original_width
-
-    final_indices_to_read = [source_indices_for_segment[i] for i in range(0, len(source_indices_for_segment), stride)]
-
-    # Apply overall process_length limit if it's not for a specific segment (num_frames_to_load was -1)
-    # AND if process_length is not -1 (meaning unlimited)
-    if num_frames_to_load == -1 and process_length != -1 and process_length < len(final_indices_to_read):
-        final_indices_to_read = final_indices_to_read[:process_length]
-    
-    if not final_indices_to_read:
-        _logger.warning(f"No frames to read for segment of {video_path} after all filters.")
-        return np.array([]), actual_fps_for_save, original_height, original_width
-
-    try:
-        frames = vid.get_batch(final_indices_to_read).asnumpy().astype("float32") / 255.0
-    except Exception as e:
-        _logger.error(f"Error in get_batch for {video_path} with indices: {e}")
-        return np.array([]), actual_fps_for_save, original_height, original_width
-        
-    del vid
-    gc.collect() # Added gc.collect
-    return frames, actual_fps_for_save, original_height, original_width
+    return frames_numpy, actual_output_fps, original_height_detected, original_width_detected, actual_processed_height, actual_processed_width, video_stream_info, ffprobe_raw_stdout
 
 def save_video(video_frames: Union[List[np.ndarray], List[PIL.Image.Image], np.ndarray], output_video_path: str = None,
                fps: Union[int, float] = 10.0, crf: int = 18, output_format: Optional[str] = None) -> str:

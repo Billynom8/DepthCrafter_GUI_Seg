@@ -54,7 +54,7 @@ except ImportError:
 
 from typing import Optional, Tuple, List, Dict
 
-GUI_VERSION = "25.09.10"
+GUI_VERSION = "25.09.12"
 _HELP_TEXTS = {}
 
 def _create_hover_tooltip(widget, help_key):
@@ -1532,6 +1532,8 @@ class DepthCrafterGUI:
                 gui_segment_output_window_frames=gui_win_setting,
                 gui_segment_output_overlap_frames=gui_ov_setting,
                 source_type=source_type_for_define,
+                gui_target_height_setting=self.target_height.get(), # <--- ADD THIS
+                gui_target_width_setting=self.target_width.get(), 
             )
 
             if not base_job_info_initial:

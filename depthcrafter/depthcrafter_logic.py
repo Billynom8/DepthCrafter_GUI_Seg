@@ -168,20 +168,30 @@ class DepthCrafterDemo:
             else:
                 target_fps_for_video_read = job_specific_metadata.get("target_fps_setting", -1)
 
+            # --- ADDED: Check for cached ffprobe info and pass it to read_video_frames ---
+            cached_ffprobe_info = None
+            if segment_job_info and "video_stream_ffprobe_info" in segment_job_info:
+                cached_ffprobe_info = segment_job_info["video_stream_ffprobe_info"]
+                _logger.debug(f"Reusing cached ffprobe info for {os.path.basename(video_path_for_read)}.")
+            # -----------------------------------------------------------------------------
 
-            loaded_frames, fps_from_read, h, w = read_video_frames(
+            loaded_frames, fps_from_read, original_h, original_w, processed_h, processed_w, video_stream_info, ffprobe_raw_stdout = read_video_frames(
                 video_path_for_read, 
                 process_length=process_length_for_read if not segment_job_info else -1,
                 target_fps=target_fps_for_video_read,
-                target_height=user_target_height,
-                target_width=user_target_width, 
-                dataset="open",
+                target_height=user_target_height, target_width=user_target_width,
                 start_frame_index=start_frame_idx, 
-                num_frames_to_load=num_frames_to_load_for_seg
+                num_frames_to_load=num_frames_to_load_for_seg,
+                cached_ffprobe_info=cached_ffprobe_info
             )
             actual_frames_to_process = loaded_frames
             actual_fps_for_save = fps_from_read
-            original_h_loaded, original_w_loaded = h, w
+            job_specific_metadata["original_height_detected"] = original_h
+            job_specific_metadata["original_width_detected"] = original_w
+            job_specific_metadata["processed_height"] = processed_h # This is the actual height Decord delivered
+            job_specific_metadata["processed_width"] = processed_w  # This is the actual width Decord delivered
+            job_specific_metadata["video_stream_metadata"] = video_stream_info # Keep ffprobe info
+            job_specific_metadata["ffprobe_raw_stdout"] = ffprobe_raw_stdout
             _logger.debug(f"Loaded {len(actual_frames_to_process) if actual_frames_to_process is not None else 0} frames from video '{video_path_for_read}'. Original FPS for save: {actual_fps_for_save:.2f}")
         
         elif isinstance(video_path_or_job_info, dict):
