@@ -949,19 +949,19 @@ class DepthCrafterGUI:
         _create_hover_tooltip(entry_inference_steps, "inference_steps")
         self.widgets_to_disable_during_processing.append(entry_inference_steps); row_idx += 1
 
-        # Target Height
-        tk.Label(main_params_frame, text="Target Height:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
-        entry_target_height = tk.Entry(main_params_frame, textvariable=self.target_height, width=18)
-        entry_target_height.grid(row=row_idx, column=1, padx=(5,0), pady=2, sticky="w")
-        _create_hover_tooltip(entry_target_height, "target_height") # Create new tooltip key
-        self.widgets_to_disable_during_processing.append(entry_target_height); row_idx += 1
-
         # Target Width
         tk.Label(main_params_frame, text="Target Width:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
         entry_target_width = tk.Entry(main_params_frame, textvariable=self.target_width, width=18)
         entry_target_width.grid(row=row_idx, column=1, padx=(5,0), pady=2, sticky="w")
         _create_hover_tooltip(entry_target_width, "target_width") # Create new tooltip key
         self.widgets_to_disable_during_processing.append(entry_target_width); row_idx += 1
+
+        # Target Height
+        tk.Label(main_params_frame, text="Target Height:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        entry_target_height = tk.Entry(main_params_frame, textvariable=self.target_height, width=18)
+        entry_target_height.grid(row=row_idx, column=1, padx=(5,0), pady=2, sticky="w")
+        _create_hover_tooltip(entry_target_height, "target_height") # Create new tooltip key
+        self.widgets_to_disable_during_processing.append(entry_target_height); row_idx += 1
 
         # Seed
         tk.Label(main_params_frame, text="Seed:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
@@ -977,17 +977,11 @@ class DepthCrafterGUI:
         _create_hover_tooltip(self.combo_cpu_offload, "cpu_offload")
         self.widgets_to_disable_during_processing.append(self.combo_cpu_offload); row_idx += 1
 
-        # Enable cuDNN Benchmark
-        self.cudnn_benchmark_cb = tk.Checkbutton(main_params_frame, text="Enable cuDNN Benchmark (Nvidia GPU Only)", variable=self.use_cudnn_benchmark)
-        self.cudnn_benchmark_cb.grid(row=row_idx, column=0, columnspan=2, sticky="w", padx=(5, 0), pady=2)
-        _create_hover_tooltip(self.cudnn_benchmark_cb, "cudnn_benchmark")
-        self.widgets_to_disable_during_processing.append(self.cudnn_benchmark_cb); row_idx +=1
-
-        # Save Sidecar JSON for Final Output
-        self.save_final_json_cb = tk.Checkbutton(main_params_frame, text="Save Sidecar JSON for Final Output", variable=self.save_final_output_json_var)
-        self.save_final_json_cb.grid(row=row_idx, column=0, columnspan=2, sticky="w", padx=5, pady=2)
-        _create_hover_tooltip(self.save_final_json_cb, "save_final_json")
-        self.widgets_to_disable_during_processing.append(self.save_final_json_cb); row_idx +=1
+        # # Enable cuDNN Benchmark
+        # self.cudnn_benchmark_cb = tk.Checkbutton(main_params_frame, text="Enable cuDNN Benchmark (Nvidia GPU Only)", variable=self.use_cudnn_benchmark)
+        # self.cudnn_benchmark_cb.grid(row=row_idx, column=0, columnspan=2, sticky="w", padx=(5, 0), pady=2)
+        # _create_hover_tooltip(self.cudnn_benchmark_cb, "cudnn_benchmark")
+        # self.widgets_to_disable_during_processing.append(self.cudnn_benchmark_cb); row_idx +=1
 
         # --- Frame & Segment Control Frame ---
         fs_frame = tk.LabelFrame(top_controls_outer_frame, text="Frame & Segment Control")
@@ -1025,6 +1019,12 @@ class DepthCrafterGUI:
         _create_hover_tooltip(entry_process_length, "process_length")
         self.widgets_to_disable_during_processing.append(entry_process_length); row_idx += 1
         
+        # Save Sidecar JSON for Final Output
+        self.save_final_json_cb = tk.Checkbutton(fs_frame, text="Save Sidecar JSON for Final Output", variable=self.save_final_output_json_var)
+        self.save_final_json_cb.grid(row=row_idx, column=0, columnspan=2, sticky="w", padx=5, pady=2)
+        _create_hover_tooltip(self.save_final_json_cb, "save_final_json")
+        self.widgets_to_disable_during_processing.append(self.save_final_json_cb); row_idx +=1
+
         # Process as Segments
         self.process_as_segments_cb = tk.Checkbutton(fs_frame, text="Process as Segments (Low VRAM Mode)", variable=self.process_as_segments_var, command=self.toggle_merge_related_options_active_state)
         self.process_as_segments_cb.grid(row=row_idx, column=0, columnspan=2, sticky="w", padx=5, pady=2)
@@ -1218,10 +1218,10 @@ class DepthCrafterGUI:
         _create_hover_tooltip(self.generate_visuals_button, "generate_visuals_button")
 
         # Add "Use Local Models Only" checkbox (as a general option, not merge-related)
-        self.use_local_models_only_cb = tk.Checkbutton(ctrl_frame, text="Local Models Only", variable=self.use_local_models_only_var)
-        self.use_local_models_only_cb.pack(side=tk.RIGHT, padx=(5,0))
-        _create_hover_tooltip(self.use_local_models_only_cb, "use_local_models_only") # Add tooltip here
-        self.widgets_to_disable_during_processing.append(self.use_local_models_only_cb)
+        # self.use_local_models_only_cb = tk.Checkbutton(ctrl_frame, text="Local Models Only", variable=self.use_local_models_only_var)
+        # self.use_local_models_only_cb.pack(side=tk.RIGHT, padx=(5,0))
+        # _create_hover_tooltip(self.use_local_models_only_cb, "use_local_models_only") # Add tooltip here
+        # self.widgets_to_disable_during_processing.append(self.use_local_models_only_cb)
 
 
         self.widgets_to_disable_during_processing.extend([
@@ -1576,6 +1576,11 @@ class DepthCrafterGUI:
                     final_jobs_to_process.append(full_source_job)
 
         if final_jobs_to_process:
+            # --- ADDED THESE LINES TO RESET PREVIOUS JOB INFO ---
+            self.current_filename_var.set("N/A")
+            self.current_resolution_var.set("N/A")
+            self.current_frames_var.set("N/A")
+            # --------------------------------------------------
             self.status_message_var.set("Starting processing...")
             self._set_ui_processing_state(True)
             self.processing_thread = threading.Thread(target=self._start_processing_wrapper, 
@@ -1593,8 +1598,6 @@ class DepthCrafterGUI:
         _logger.info(f"Starting batch processing for {len(video_processing_jobs)} items...")
         self.status_message_var.set("Starting processing...")
 
-        # Initialize returned_job_specific_metadata before the loop to ensure it's always bound.
-        # This will hold the result of the *last completed job* for display if the loop breaks.
         returned_job_specific_metadata_last_job = {} 
         
         try:
@@ -1617,36 +1620,70 @@ class DepthCrafterGUI:
             self.current_filename_var.set("N/A")
             self.current_resolution_var.set("N/A")
             self.current_frames_var.set("N/A")
-            return # Exit processing if model initialization fails
+            return 
 
         all_videos_master_metadata = {} 
 
         _logger.info("Scanning input folder: Please wait...")
         
         for i, job_info_to_run in enumerate(video_processing_jobs):
-            # Check for cancellation *before* starting a new job item
             if self.stop_event.is_set():
                 _logger.info("Processing cancelled by user after current item.")
                 self.status_message_var.set("Stopping...")
-                # Reset current processing info display immediately on stop
-                self.current_filename_var.set("N/A")
-                self.current_resolution_var.set("N/A")
-                self.current_frames_var.set("N/A")
-                break # Exit the loop cleanly
+                self.current_filename_var.set("N/A") # Reset immediately on stop
+                self.current_resolution_var.set("N/A") # Reset immediately on stop
+                self.current_frames_var.set("N/A") # Reset immediately on stop
+                self.root.update_idletasks() # Ensure this reset is visible
+                break
             
             current_video_path = job_info_to_run["video_path"] 
             original_basename = job_info_to_run["original_basename"]
             is_segment_job = job_info_to_run.get("is_segment", False)
-            # --- DEFINE log_msg_prefix EARLIER ---
-            # log_msg_prefix = f"Segment {job_info_to_run.get('segment_id', -1)+1}/{job_info_to_run.get('total_segments', 0)}" if is_segment_job else "Full video".
-            log_msg_prefix = "hello world"
-            # --- END EARLIER DEFINITION ---
 
-            # # --- NOW UPDATE FILENAME VAR WITH log_msg_prefix ---
-            # self.current_filename_var.set(f"{original_basename} ({log_msg_prefix})") 
-            # self.current_resolution_var.set(f"2 test res") 
-            # self.current_frames_var.set(original_basename) 
-            # ---------------------------------------------------
+            log_msg_prefix = f"Segment {job_info_to_run.get('segment_id', -1)+1}/{job_info_to_run.get('total_segments', 0)}" if is_segment_job else "Full video"
+            
+            # --- START PART A: INITIAL GUI UPDATE (TARGET/EXPECTED VALUES) ---
+            _logger.debug(f"DEBUG GUI UPDATE (Initial): Starting update for {original_basename}")
+            self.current_filename_var.set(f"{original_basename} ({log_msg_prefix})") 
+            
+            # Initial Resolution (using target_height/width setting and original dimensions as a hint)
+            target_h_setting = self.target_height.get()
+            target_w_setting = self.target_width.get()
+
+            initial_display_res = "N/A"
+            if target_h_setting > 0 and target_w_setting > 0:
+                 initial_display_res = f"{target_w_setting}x{target_h_setting}"
+            else:
+                 original_h = job_info_to_run.get("original_height", "N/A")
+                 original_w = job_info_to_run.get("original_width", "N/A")
+                 if original_h != "N/A" and original_w != "N/A":
+                     initial_display_res = f"{original_w}x{original_h} (Original/Fallback)"
+            self.current_resolution_var.set(initial_display_res)
+
+            # Initial Frames (using gui settings for segment/process_length)
+            total_frames_orig_vid = job_info_to_run.get('original_video_raw_frame_count', 'N/A')
+            initial_display_frames_str = "N/A"
+            if is_segment_job:
+                window_size_setting = job_info_to_run.get("gui_desired_output_window_frames", "N/A")
+                overlap_size_setting = job_info_to_run.get("gui_desired_output_overlap_frames", "N/A")
+                num_frames_to_load_raw = job_info_to_run.get("num_frames_to_load_raw", "N/A")
+                if num_frames_to_load_raw != "N/A" and window_size_setting != "N/A" and overlap_size_setting != "N/A":
+                    initial_display_frames_str = f"{num_frames_to_load_raw}"
+                elif num_frames_to_load_raw != "N/A":
+                    initial_display_frames_str = f"{num_frames_to_load_raw}"
+                
+                if total_frames_orig_vid != "N/A" and str(num_frames_to_load_raw) != str(total_frames_orig_vid):
+                    initial_display_frames_str += f" of {total_frames_orig_vid}"
+            else: # Full video
+                process_length_setting = self.process_length.get()
+                if process_length_setting != -1:
+                    initial_display_frames_str = f"{process_length_setting}"
+                else:
+                    initial_display_frames_str = f"{total_frames_orig_vid}"
+            self.current_frames_var.set(initial_display_frames_str)
+
+            self.root.update_idletasks() # Force GUI update for initial display
+            # --- END PART A: INITIAL GUI UPDATE ---
 
             if current_video_path not in all_videos_master_metadata:
                 current_video_comprehensive_base_info = base_job_info_map.get(current_video_path, {})
@@ -1668,81 +1705,62 @@ class DepthCrafterGUI:
             
             master_meta_for_this_vid = all_videos_master_metadata[current_video_path]
             
-            log_msg_prefix = f"Segment {job_info_to_run.get('segment_id', -1)+1}/{job_info_to_run.get('total_segments', 0)}" if is_segment_job else "Full video"
-            
-            # --- START PROCESSING THIS JOB ---
             _logger.info(f"Processing {original_basename} - {log_msg_prefix} ({i+1}/{len(video_processing_jobs)})")
-            self.status_message_var.set(f"Processing {i + 1} of {len(video_processing_jobs)}: {original_basename} ({log_msg_prefix})")
+            self.status_message_var.set(f"Processing {i + 1} of {len(video_processing_jobs)}")
 
             job_successful, current_job_specific_metadata = self._process_single_job(demo, job_info_to_run, master_meta_for_this_vid)
             
-            # Ensure current_job_specific_metadata is always a dictionary (even if empty)
             if current_job_specific_metadata is None:
                 _logger.error(f"Error: _process_single_job for {original_basename} returned None metadata. Initializing to empty dict.")
                 current_job_specific_metadata = {}
             
-            # Store for potential final display if the loop breaks after this job
             returned_job_specific_metadata_last_job = current_job_specific_metadata 
 
             self.message_queue.put(("progress", i + 1)) # Update progress bar
 
-            # --- Update Current Processing Information Display (NOW that metadata is available) ---
-            self.current_filename_var.set(original_basename)
+            # --- START PART B: FINAL GUI UPDATE (ACTUAL/PROCESSED VALUES) ---
+            _logger.debug(f"DEBUG GUI UPDATE (Final): Starting update for {original_basename}")
+
+            # RESOLUTION UPDATE (from actual processed values)
+            processed_h = current_job_specific_metadata.get("processed_height", "N/A")
+            processed_w = current_job_specific_metadata.get("processed_width", "N/A")
             
-            # RESOLUTION UPDATE (prioritizing processed resolution)
-            processed_h = current_job_specific_metadata.get("processed_height", "N/A_meta")
-            processed_w = current_job_specific_metadata.get("processed_width", "N/A_meta")
-            
-            display_res = "N/A_final"
-            if processed_h != "N/A_meta" and processed_w != "N/A_meta":
-                display_res = f"{processed_w}x{processed_h}"
+            final_display_res = "N/A"
+            if processed_h != "N/A" and processed_w != "N/A":
+                final_display_res = f"{processed_w}x{processed_h}" # This is the actual processed resolution
             else:
-                # Fallback to original dimensions if processed not available (and mark it as original)
-                original_h = job_info_to_run.get("original_height", "N/A_job")
-                original_w = job_info_to_run.get("original_width", "N/A_job")
-                _logger.debug(f"DEBUG GUI UPDATE: Metadata reports original_h='{original_h}', original_w='{original_w}' (fallback)")
-                if original_h != "N/A_job" and original_w != "N/A_job":
-                    display_res = f"{original_w}x{original_h} (Original)"
-            self.current_resolution_var.set(display_res)
-            _logger.debug(f"DEBUG GUI UPDATE: Resolution set to '{self.current_resolution_var.get()}'")
+                final_display_res = self.current_resolution_var.get() + " (Failed to confirm)" # Append if couldn't get actual
+            self.current_resolution_var.set(final_display_res)
             
-            # FRAMES UPDATE (showing job-specific frames with context)
-            processed_frames_for_job = current_job_specific_metadata.get("frames_in_output_video", "N/A_meta")
-            total_frames_orig_vid = job_info_to_run.get('original_video_raw_frame_count', 'N/A_job')
-            _logger.debug(f"DEBUG GUI UPDATE: Metadata reports processed_frames_for_job='{processed_frames_for_job}', total_frames_orig_vid='{total_frames_orig_vid}'")
+            # FRAMES UPDATE (from actual processed values)
+            processed_frames_for_job = current_job_specific_metadata.get("frames_in_output_video", "N/A")
+            
+            final_display_frames_str = "N/A"
 
-            display_frames_str = "N/A_final"
-
-            if processed_frames_for_job != "N/A_meta":
-                is_segment_job_in_info = job_info_to_run.get("is_segment", False)
-                
-                if is_segment_job_in_info:
-                    window_size_setting = job_info_to_run.get("gui_desired_output_window_frames", "N/A_job")
-                    overlap_size_setting = job_info_to_run.get("gui_desired_output_overlap_frames", "N/A_job")
-                    _logger.debug(f"DEBUG GUI UPDATE: Segment info: window='{window_size_setting}', overlap='{overlap_size_setting}'")
+            if processed_frames_for_job != "N/A":
+                if is_segment_job:
+                    window_size_setting = job_info_to_run.get("gui_desired_output_window_frames", "N/A")
+                    overlap_size_setting = job_info_to_run.get("gui_desired_output_overlap_frames", "N/A")
                     
-                    if window_size_setting != "N/A_job" and overlap_size_setting != "N/A_job":
-                         display_frames_str = f"{processed_frames_for_job} ({window_size_setting}W/{overlap_size_setting}O)"
+                    if window_size_setting != "N/A" and overlap_size_setting != "N/A":
+                         final_display_frames_str = f"{processed_frames_for_job}"
                     else:
-                         display_frames_str = f"{processed_frames_for_job} (Segment)"
+                         final_display_frames_str = f"{processed_frames_for_job} (Segment)"
 
-                    if total_frames_orig_vid != "N/A_job" and str(processed_frames_for_job) != str(total_frames_orig_vid):
-                         display_frames_str += f" of {total_frames_orig_vid} total"
+                    if total_frames_orig_vid != "N/A" and str(processed_frames_for_job) != str(total_frames_orig_vid):
+                         final_display_frames_str += f" of {total_frames_orig_vid} total"
                     
                 else: # Full video processing
-                    display_frames_str = f"{processed_frames_for_job}"
-                    if total_frames_orig_vid != "N/A_job" and str(processed_frames_for_job) != str(total_frames_orig_vid):
-                        display_frames_str += f" (of {total_frames_orig_vid} total)"
+                    final_display_frames_str = f"{processed_frames_for_job}"
+                    if total_frames_orig_vid != "N/A" and str(processed_frames_for_job) != str(total_frames_orig_vid):
+                        final_display_frames_str += f" (of {total_frames_orig_vid} total)"
+            else:
+                final_display_frames_str = self.current_frames_var.get() + " (Failed to confirm)" # Append if couldn't get actual
             
-            self.current_frames_var.set(display_frames_str)
-            _logger.debug(f"DEBUG GUI UPDATE: Frames set to '{self.current_frames_var.get()}'")
-            # --- ADD THIS LINE TO FORCE GUI REFRESH ---
-            self.root.update_idletasks() 
-            # ------------------------------------------
-            _logger.debug(f"DEBUG GUI UPDATE: Forced Tkinter update_idletasks().")
-            # --- END Current Processing Information Display Update ---
+            self.current_frames_var.set(final_display_frames_str)
+            self.root.update_idletasks() # Force GUI update for final display
+            # --- END PART B: FINAL GUI UPDATE ---
 
-            # Update job info for master metadata
             if is_segment_job and "segment_id" not in current_job_specific_metadata:
                 current_job_specific_metadata["segment_id"] = job_info_to_run.get("segment_id", -1)
             
@@ -1761,18 +1779,10 @@ class DepthCrafterGUI:
             if total_accounted_for_vid >= master_meta_for_this_vid["total_expected_jobs"]:
                 self._finalize_video_processing(current_video_path, original_basename, master_meta_for_this_vid)
 
-        # --- Final cleanup and status update after the loop finishes (or breaks) ---
-        if not self.stop_event.is_set(): # If loop completed without explicit stop request
+        if not self.stop_event.is_set():
             _logger.info("All processing jobs complete!")
             self.status_message_var.set("Processing Finished.")
-        # If stop_event was set, status_message_var would have been set to "Stopping..." inside the loop's break condition.
         
-        # Reset current processing info display
-        self.current_filename_var.set("N/A_fin")
-        self.current_resolution_var.set("N/A_fin")
-        self.current_frames_var.set("N/A_fin")
-
-        # Demo object and CUDA cache cleanup
         if 'demo' in locals() and demo is not None:
             try:
                 if hasattr(demo, 'pipe') and demo.pipe is not None:
