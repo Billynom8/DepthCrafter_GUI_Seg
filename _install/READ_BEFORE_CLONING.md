@@ -23,7 +23,7 @@ DepthCrafter_GUI_Seg_Installer.bat
 ```
 
 > The installer will:
-> - Check for required tools (Git, Python, CUDA)
+> - Check for required tools (Git, Python, CUDA, FFMPEG)
 > - Clone the `DepthCrafter_GUI_Seg` repository
 > - Set up a virtual environment
 > - Install all dependencies

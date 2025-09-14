@@ -11,6 +11,7 @@ Ensure the following tools are installed and available in your system's PATH:
 - [Git](https://git-scm.com/)
 - [Python 3.8+](https://www.python.org/)
 - [CUDA Toolkit 12.8 or 12.9](https://developer.nvidia.com/cuda-toolkit)
+- [FFMPEG](https://techtactician.com/how-to-install-ffmpeg-and-add-it-to-path-on-windows/)
 
 ---
 
