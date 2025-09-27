@@ -163,7 +163,6 @@ def _load_multiple_segments_data(sorted_jobs_info: list, base_dir: str):
     
     return all_loaded_segments_frames, segment_job_meta_map, determined_fps
 
-
 def _align_segments_data(all_loaded_segments_frames: list, segment_job_meta_map: list, N_overlap: int, merge_alignment_method: str):
     if not all_loaded_segments_frames: return [] 
     if len(all_loaded_segments_frames) == 1: return all_loaded_segments_frames 
@@ -208,7 +207,6 @@ def _align_segments_data(all_loaded_segments_frames: list, segment_job_meta_map:
             _logger.debug(f"  N_overlap is 0. No explicit alignment for segment ID {current_id}.")
         all_aligned_segments_frames.append(aligned_current)
     return all_aligned_segments_frames
-
 
 def _stitch_and_blend_segments_data(all_aligned_segments: list, segment_job_meta_map: list, N_overlap: int):
     if not all_aligned_segments: 
@@ -280,7 +278,6 @@ def _stitch_and_blend_segments_data(all_aligned_segments: list, segment_job_meta
         raise ValueError("No frames in final list after stitching.")
     return np.array(final_frames_list, dtype=np.float32)
 
-
 def _apply_mp4_postprocessing_refactored(
     video_normalized: np.ndarray, 
     apply_gamma: bool, 
@@ -297,7 +294,6 @@ def _apply_mp4_postprocessing_refactored(
     if do_dithering:
         video_processed = apply_dithering_to_video(video_processed, dither_strength)
     return video_processed
-
 
 def _determine_output_path(
     out_path_arg: str, 
