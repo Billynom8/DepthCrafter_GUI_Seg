@@ -31,6 +31,11 @@ CVPR 2025， **Highlight**
 
 ## GUI Update
 
+*   `[25-09-28]` 
+
+    *   Secondary output with selectable depth range.
+
+
 *   `[25-09-12]` 
 
 **Added Features:**
@@ -62,7 +67,7 @@ Also moved helper files into depthcrafter sub-folder
 ## GUI for Enhanced Workflow (Community Contribution)
 
 <div align="center">
-  <img src="https://raw.githubusercontent.com/Billynom8/DepthCrafter_GUI_Seg/main/tools/gui_image_25.09.12.png" alt="DepthCrafter GUI" width="600" />
+  <img src="https://raw.githubusercontent.com/Billynom8/DepthCrafter_GUI_Seg/main/tools/gui_image_25.09.28.png" alt="DepthCrafter GUI" width="600" />
 </div>
 
 A graphical user interface (GUI) has been added to DepthCrafter to simplify batch processing, manage videos requiring segmentation (e.g., for low VRAM environments or very long videos), and streamline the output process.
