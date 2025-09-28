@@ -144,6 +144,13 @@ class DepthCrafterGUI:
         self.target_height = tk.IntVar(value=384) # Initial default height
         self.target_width = tk.IntVar(value=640)  # Initial default width
         self.debug_logging_enabled = tk.BooleanVar(value=False) # Default to OFF (INFO level)
+        self.enable_dual_output_robust_norm = tk.BooleanVar(value=True) # Default to ON for testing
+        self.robust_norm_low_percentile = tk.DoubleVar(value=0.0)      # Example default
+        self.robust_norm_high_percentile = tk.DoubleVar(value=75.5)     # Example default
+        self.robust_norm_output_min = tk.DoubleVar(value=0.0)
+        self.robust_norm_output_max = tk.DoubleVar(value=1.0)
+        self.robust_output_suffix = tk.StringVar(value="_clipped_depth")
+        self.is_depth_far_black = tk.BooleanVar(value=True)
 
         self.all_tk_vars = {
             "input_dir_or_file_var": self.input_dir_or_file_var,
@@ -175,6 +182,13 @@ class DepthCrafterGUI:
             "use_local_models_only_var": self.use_local_models_only_var,
             "target_height": self.target_height,
             "target_width": self.target_width,
+            "enable_dual_output_robust_norm": self.enable_dual_output_robust_norm,
+            "robust_norm_low_percentile": self.robust_norm_low_percentile,
+            "robust_norm_high_percentile": self.robust_norm_high_percentile,
+            "robust_norm_output_min": self.robust_norm_output_min,
+            "robust_norm_output_max": self.robust_norm_output_max,
+            "robust_output_suffix": self.robust_output_suffix,
+            "is_depth_far_black": self.is_depth_far_black,
         }
         self.initial_default_settings = self._collect_all_settings()
         self._help_data = None
@@ -190,6 +204,7 @@ class DepthCrafterGUI:
         self.load_config() 
         self.stop_event = threading.Event()
         self.processing_thread = None
+        self.secondary_output_widgets_references = []
         self._load_help_content()
         # --- ADD THIS INITIAL LOGGING SETUP ---
         # Set initial logging level based on the default value of debug_logging_enabled
@@ -204,6 +219,7 @@ class DepthCrafterGUI:
         # self.root.after(100, self.process_queue) # Removed GUI log update
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.toggle_merge_related_options_active_state()
+        self.toggle_secondary_output_options_active_state()
                 
         _logger.info("DepthCrafter GUI initialized successfully.")
 
@@ -299,13 +315,16 @@ class DepthCrafterGUI:
         
         self.widgets_to_disable_during_processing.extend([self.entry_output_dir, self.browse_output_btn])
 
-        # --- Top Controls Outer Frame ---
-        top_controls_outer_frame = tk.Frame(self.root)
-        top_controls_outer_frame.pack(fill="x", padx=0, pady=0, expand=False) 
+        # --- Settings Container Frame (New) ---
+        # This frame will hold the Main Params, Frame & Segment Control, Merged Output, and Secondary Output frames.
+        settings_container_frame = tk.Frame(self.root)
+        settings_container_frame.pack(fill="x", padx=10, pady=0, expand=False)
+        settings_container_frame.columnconfigure(0, weight=1)
+        settings_container_frame.columnconfigure(1, weight=1)
 
         # --- Main Parameters Frame ---
-        main_params_frame = tk.LabelFrame(top_controls_outer_frame, text="Main Parameters")
-        main_params_frame.grid(row=0, column=0, padx=(10,5), pady=5, sticky="nw")
+        main_params_frame = tk.LabelFrame(settings_container_frame, text="Main Parameters")
+        main_params_frame.grid(row=0, column=0, padx=(0,5), pady=5, sticky="nsew") # Placed in new container
         row_idx = 0
         
         # Guidance Scale
@@ -326,14 +345,14 @@ class DepthCrafterGUI:
         tk.Label(main_params_frame, text="Target Width:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
         entry_target_width = tk.Entry(main_params_frame, textvariable=self.target_width, width=18)
         entry_target_width.grid(row=row_idx, column=1, padx=(5,0), pady=2, sticky="w")
-        _create_hover_tooltip(entry_target_width, "target_width") # Create new tooltip key
+        _create_hover_tooltip(entry_target_width, "target_width")
         self.widgets_to_disable_during_processing.append(entry_target_width); row_idx += 1
 
         # Target Height
         tk.Label(main_params_frame, text="Target Height:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
         entry_target_height = tk.Entry(main_params_frame, textvariable=self.target_height, width=18)
         entry_target_height.grid(row=row_idx, column=1, padx=(5,0), pady=2, sticky="w")
-        _create_hover_tooltip(entry_target_height, "target_height") # Create new tooltip key
+        _create_hover_tooltip(entry_target_height, "target_height")
         self.widgets_to_disable_during_processing.append(entry_target_height); row_idx += 1
 
         # Seed
@@ -350,17 +369,9 @@ class DepthCrafterGUI:
         _create_hover_tooltip(self.combo_cpu_offload, "cpu_offload")
         self.widgets_to_disable_during_processing.append(self.combo_cpu_offload); row_idx += 1
 
-        # # Enable cuDNN Benchmark
-        # self.cudnn_benchmark_cb = tk.Checkbutton(main_params_frame, text="Enable cuDNN Benchmark (Nvidia GPU Only)", variable=self.use_cudnn_benchmark)
-        # self.cudnn_benchmark_cb.grid(row=row_idx, column=0, columnspan=2, sticky="w", padx=(5, 0), pady=2)
-        # _create_hover_tooltip(self.cudnn_benchmark_cb, "cudnn_benchmark")
-        # self.widgets_to_disable_during_processing.append(self.cudnn_benchmark_cb); row_idx +=1
-
         # --- Frame & Segment Control Frame ---
-        fs_frame = tk.LabelFrame(top_controls_outer_frame, text="Frame & Segment Control")
-        fs_frame.grid(row=0, column=1, padx=(5,10), pady=5, sticky="new")
-        top_controls_outer_frame.columnconfigure(0, weight=1)
-        top_controls_outer_frame.columnconfigure(1, weight=1)
+        fs_frame = tk.LabelFrame(settings_container_frame, text="Frame & Segment Control")
+        fs_frame.grid(row=0, column=1, padx=(5,0), pady=5, sticky="nsew") # Placed in new container
 
         row_idx = 0 
         
@@ -405,22 +416,22 @@ class DepthCrafterGUI:
         self.widgets_to_disable_during_processing.append(self.process_as_segments_cb); row_idx += 1
 
         # --- Merged Output Options Frame ---
-        merge_opts_frame = tk.LabelFrame(self.root, text="Merged Output Options (if segments processed)")
-        merge_opts_frame.pack(fill="x", padx=10, pady=5, expand=False)
-        merge_opts_frame.columnconfigure(0, minsize=240)
+        merge_opts_frame = tk.LabelFrame(settings_container_frame, text="Merged Output Options (if segments processed)")
+        merge_opts_frame.grid(row=1, column=0, padx=(0,5), pady=5, sticky="nsew") # Placed in new container
+        merge_opts_frame.columnconfigure(0, minsize=120) # Ensure column 0 for labels is wide enough
         self.merge_related_widgets_references = []
         self.keep_npz_dependent_widgets = []
         row_idx = 0
 
         # Keep intermediate NPZ files
-        self.keep_npz_cb = tk.Checkbutton(merge_opts_frame, text="Keep intermediate NPZ files", variable=self.keep_intermediate_npz_var, command=self.toggle_keep_npz_dependent_options_state)
+        self.keep_npz_cb = tk.Checkbutton(merge_opts_frame, text="Keep intermediate NPZ", variable=self.keep_intermediate_npz_var, command=self.toggle_keep_npz_dependent_options_state)
         self.keep_npz_cb.grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
         _create_hover_tooltip(self.keep_npz_cb, "keep_npz")
         self.merge_related_widgets_references.append(self.keep_npz_cb)
         self.widgets_to_disable_during_processing.append(self.keep_npz_cb); row_idx += 1
 
         # Min Orig. Vid Frames to Keep NPZ
-        self.lbl_min_frames_npz = tk.Label(merge_opts_frame, text="  ↳ Min Orig. Vid Frames to Keep NPZ:")
+        self.lbl_min_frames_npz = tk.Label(merge_opts_frame, text="  ↳ Min thesh. to Keep NPZ:")
         self.lbl_min_frames_npz.grid(row=row_idx, column=0, sticky="e", padx=(20,2), pady=2)
         self.entry_min_frames_npz = tk.Entry(merge_opts_frame, textvariable=self.min_frames_to_keep_npz_var, width=7)
         self.entry_min_frames_npz.grid(row=row_idx, column=1, padx=(0,2), pady=2, sticky="w")
@@ -429,7 +440,7 @@ class DepthCrafterGUI:
         self.widgets_to_disable_during_processing.extend([self.lbl_min_frames_npz, self.entry_min_frames_npz]); row_idx += 1
 
         # Segment Visual Format
-        self.lbl_intermediate_fmt = tk.Label(merge_opts_frame, text="  ↳ Segment Visual Format:")
+        self.lbl_intermediate_fmt = tk.Label(merge_opts_frame, text="  ↳ Segment Format:")
         self.lbl_intermediate_fmt.grid(row=row_idx, column=0, sticky="e", padx=(20,2), pady=2)
         combo_intermediate_fmt_values = ["png_sequence", "mp4", "main10_mp4", "none"]
         if OPENEXR_AVAILABLE_GUI: combo_intermediate_fmt_values.extend(["exr_sequence", "exr"])
@@ -441,7 +452,7 @@ class DepthCrafterGUI:
         self.toggle_keep_npz_dependent_options_state()
 
         # Dithering (MP4)
-        self.merge_dither_cb = tk.Checkbutton(merge_opts_frame, text="Dithering (MP4)", variable=self.merge_dither_var, command=self.toggle_dither_options_active_state)
+        self.merge_dither_cb = tk.Checkbutton(merge_opts_frame, text="Dithering", variable=self.merge_dither_var, command=self.toggle_dither_options_active_state)
         self.merge_dither_cb.grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
         _create_hover_tooltip(self.merge_dither_cb, "merge_dither") # Tooltip on checkbox
         
@@ -458,7 +469,7 @@ class DepthCrafterGUI:
         self.toggle_dither_options_active_state() # Call after creation
 
         # Gamma Correct (MP4)
-        self.merge_gamma_cb = tk.Checkbutton(merge_opts_frame, text="Gamma Correct (MP4)", variable=self.merge_gamma_correct_var, command=self.toggle_gamma_options_active_state)
+        self.merge_gamma_cb = tk.Checkbutton(merge_opts_frame, text="Gamma Adjust", variable=self.merge_gamma_correct_var, command=self.toggle_gamma_options_active_state)
         self.merge_gamma_cb.grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
         _create_hover_tooltip(self.merge_gamma_cb, "merge_gamma") # Tooltip on checkbox
         
@@ -475,7 +486,7 @@ class DepthCrafterGUI:
         self.toggle_gamma_options_active_state() # Call after creation
 
         # Percentile Normalization
-        self.merge_perc_norm_cb = tk.Checkbutton(merge_opts_frame, text="Percentile Normalization", variable=self.merge_percentile_norm_var, command=self.toggle_percentile_norm_options_active_state)
+        self.merge_perc_norm_cb = tk.Checkbutton(merge_opts_frame, text="Normalization", variable=self.merge_percentile_norm_var, command=self.toggle_percentile_norm_options_active_state)
         self.merge_perc_norm_cb.grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
         _create_hover_tooltip(self.merge_perc_norm_cb, "merge_percentile_norm") # Tooltip on checkbox
         
@@ -489,13 +500,13 @@ class DepthCrafterGUI:
         self.lbl_high_perc.pack(side=tk.LEFT, padx=(0,2))
         self.entry_high_perc = tk.Entry(low_high_frame, textvariable=self.merge_norm_high_perc_var, width=7)
         self.entry_high_perc.pack(side=tk.LEFT, padx=(0,0))
-        tk.Label(merge_opts_frame, text="  ↳").grid(row=row_idx, column=0, sticky="e", padx=(20,2)) # Aligns with the checkbox
+        tk.Label(merge_opts_frame, text="  ↳").grid(row=row_idx, column=0, sticky="e", padx=(10,2)) # Aligns with the checkbox
         _create_hover_tooltip(self.entry_low_perc, "merge_norm_low_perc") # Tooltip on entry
         _create_hover_tooltip(self.entry_high_perc, "merge_norm_high_perc") # Tooltip on entry
         
-        self.merge_related_widgets_references.append(self.merge_perc_norm_cb) # Add checkbox to references, details frame is managed by toggle
+        self.merge_related_widgets_references.append(self.merge_perc_norm_cb)
         self.widgets_to_disable_during_processing.extend([self.lbl_low_perc, self.entry_low_perc, self.lbl_high_perc, self.entry_high_perc]); row_idx += 1
-        self.toggle_percentile_norm_options_active_state() # Call after creation
+        self.toggle_percentile_norm_options_active_state()
 
         # Alignment Method
         lbl_merge_alignment = tk.Label(merge_opts_frame, text="Alignment Method:")
@@ -524,7 +535,68 @@ class DepthCrafterGUI:
         _create_hover_tooltip(self.entry_merge_suffix, "merge_output_suffix")
         self.merge_related_widgets_references.append((lbl_merge_suffix, self.entry_merge_suffix))
         self.widgets_to_disable_during_processing.extend([lbl_merge_suffix, self.entry_merge_suffix]); row_idx += 1
+
+        # --- NEW: Secondary Output Frame ---
+        secondary_output_frame = tk.LabelFrame(settings_container_frame, text="Secondary Output")
+        secondary_output_frame.grid(row=1, column=1, padx=(5,0), pady=5, sticky="nsew") # Placed in new container
+        secondary_output_frame.columnconfigure(0, minsize=140) # Adjust as needed
         
+        row_idx = 0
+        # Enable Secondary Output Checkbox
+        self.enable_secondary_output_cb = tk.Checkbutton(secondary_output_frame, text="Enable Secondary Output", variable=self.enable_dual_output_robust_norm, command=self.toggle_secondary_output_options_active_state)
+        self.enable_secondary_output_cb.grid(row=row_idx, column=0, columnspan=2, sticky="w", padx=5, pady=2)
+        _create_hover_tooltip(self.enable_secondary_output_cb, "enable_secondary_output") # Add help_content.json entry
+        self.widgets_to_disable_during_processing.append(self.enable_secondary_output_cb); row_idx += 1
+        
+        # Depth Range (0-1) Low / High
+        tk.Label(secondary_output_frame, text="Depth Output Range (0-1):").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        depth_range_frame = tk.Frame(secondary_output_frame)
+        depth_range_frame.grid(row=row_idx, column=1, sticky="w", padx=0, pady=0)
+        
+        lbl_out_min = tk.Label(depth_range_frame, text="Low:")
+        lbl_out_min.pack(side=tk.LEFT, padx=(0,2))
+        entry_out_min = tk.Entry(depth_range_frame, textvariable=self.robust_norm_output_min, width=7)
+        entry_out_min.pack(side=tk.LEFT, padx=(0,10))
+        _create_hover_tooltip(entry_out_min, "robust_norm_output_min") # Add help_content.json entry
+        
+        lbl_out_max = tk.Label(depth_range_frame, text="High:")
+        lbl_out_max.pack(side=tk.LEFT, padx=(0,2))
+        entry_out_max = tk.Entry(depth_range_frame, textvariable=self.robust_norm_output_max, width=7)
+        entry_out_max.pack(side=tk.LEFT, padx=(0,0))
+        _create_hover_tooltip(entry_out_max, "robust_norm_output_max") # Add help_content.json entry
+        
+        self.secondary_output_widgets_references.extend([lbl_out_min, entry_out_min, lbl_out_max, entry_out_max])
+        self.widgets_to_disable_during_processing.extend([lbl_out_min, entry_out_min, lbl_out_max, entry_out_max]); row_idx += 1
+
+        # Normalize % Low / High
+        tk.Label(secondary_output_frame, text="Clipped Output % Range:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        norm_perc_frame = tk.Frame(secondary_output_frame)
+        norm_perc_frame.grid(row=row_idx, column=1, sticky="w", padx=0, pady=0)
+        
+        lbl_norm_low = tk.Label(norm_perc_frame, text="Low:")
+        lbl_norm_low.pack(side=tk.LEFT, padx=(0,2))
+        entry_norm_low = tk.Entry(norm_perc_frame, textvariable=self.robust_norm_low_percentile, width=7)
+        entry_norm_low.pack(side=tk.LEFT, padx=(0,10))
+        _create_hover_tooltip(entry_norm_low, "robust_norm_low_percentile") # Add help_content.json entry
+        
+        lbl_norm_high = tk.Label(norm_perc_frame, text="High:")
+        lbl_norm_high.pack(side=tk.LEFT, padx=(0,2))
+        entry_norm_high = tk.Entry(norm_perc_frame, textvariable=self.robust_norm_high_percentile, width=7)
+        entry_norm_high.pack(side=tk.LEFT, padx=(0,0))
+        _create_hover_tooltip(entry_norm_high, "robust_norm_high_percentile") # Add help_content.json entry
+        
+        self.secondary_output_widgets_references.extend([lbl_norm_low, entry_norm_low, lbl_norm_high, entry_norm_high])
+        self.widgets_to_disable_during_processing.extend([lbl_norm_low, entry_norm_low, lbl_norm_high, entry_norm_high]); row_idx += 1
+
+        # Output Suffix
+        lbl_robust_suffix = tk.Label(secondary_output_frame, text="Output Suffix:")
+        lbl_robust_suffix.grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        entry_robust_suffix = tk.Entry(secondary_output_frame, textvariable=self.robust_output_suffix, width=18)
+        entry_robust_suffix.grid(row=row_idx, column=1, padx=(0,2), pady=2, sticky="w")
+        _create_hover_tooltip(entry_robust_suffix, "robust_output_suffix") # Add help_content.json entry
+        self.secondary_output_widgets_references.extend([lbl_robust_suffix, entry_robust_suffix])
+        self.widgets_to_disable_during_processing.extend([lbl_robust_suffix, entry_robust_suffix]); row_idx += 1
+
         # --- Progress Bar and Status ---
         progress_bar_frame = tk.Frame(self.root)
         progress_bar_frame.pack(pady=(10, 0), padx=10, fill="x", expand=False)
@@ -590,13 +662,6 @@ class DepthCrafterGUI:
         self.generate_visuals_button.pack(side=tk.LEFT)
         _create_hover_tooltip(self.generate_visuals_button, "generate_visuals_button")
 
-        # Add "Use Local Models Only" checkbox (as a general option, not merge-related)
-        # self.use_local_models_only_cb = tk.Checkbutton(ctrl_frame, text="Local Models Only", variable=self.use_local_models_only_var)
-        # self.use_local_models_only_cb.pack(side=tk.RIGHT, padx=(5,0))
-        # _create_hover_tooltip(self.use_local_models_only_cb, "use_local_models_only") # Add tooltip here
-        # self.widgets_to_disable_during_processing.append(self.use_local_models_only_cb)
-
-
         self.widgets_to_disable_during_processing.extend([
             self.start_button, self.remerge_button,
             self.generate_visuals_button
@@ -621,6 +686,7 @@ class DepthCrafterGUI:
         _logger.info(f"--- Starting Segment Visual Generation for: {os.path.basename(meta_file)} (Format: {vis_fmt}) ---")
         self._set_ui_processing_state(True)
         self.processing_thread = threading.Thread(target=self._execute_generate_segment_visuals_wrapper, args=(args,), daemon=True); self.processing_thread.start()
+        self.root.after(100, self.process_queue)
 
     def load_config(self):
         if os.path.exists(self.CONFIG_FILENAME):
@@ -683,6 +749,8 @@ class DepthCrafterGUI:
         meta_file = filedialog.askopenfilename(title="Select Master Metadata JSON for Re-Merging", filetypes=[("JSON files", "*.json"), ("All files", "*.*")], initialdir=self.output_dir.get())
         if not meta_file: return
         
+        _logger.debug(f"DEBUG (re_merge_from_gui): enable_dual_output_robust_norm.get() is {self.enable_dual_output_robust_norm.get()}")
+        
         base_name_from_meta = os.path.splitext(os.path.basename(meta_file))[0].replace("_master_meta", "")
         output_suffix = self.merge_output_suffix_var.get()
         remerge_base_name = f"{base_name_from_meta}{output_suffix}"
@@ -735,7 +803,15 @@ class DepthCrafterGUI:
                 "use_percentile_norm": self.merge_percentile_norm_var.get(), "norm_low_percentile": self.merge_norm_low_perc_var.get(),
                 "norm_high_percentile": self.merge_norm_high_perc_var.get(), "output_format": out_fmt,
                 "merge_alignment_method": align_method,
-                "output_filename_override_base": remerge_base_name}
+                "output_filename_override_base": remerge_base_name,
+                "enable_dual_output_robust_norm": self.enable_dual_output_robust_norm.get(),
+                "robust_norm_low_percentile": self.robust_norm_low_percentile.get(),
+                "robust_norm_high_percentile": self.robust_norm_high_percentile.get(),
+                "robust_norm_output_min": self.robust_norm_output_min.get(),
+                "robust_norm_output_max": self.robust_norm_output_max.get(),
+                "robust_output_suffix": self.robust_output_suffix.get(),
+                "is_depth_far_black": self.is_depth_far_black.get()
+                }
 
         if self.processing_thread and self.processing_thread.is_alive():
             messagebox.showwarning("Busy", "Another process is running. Please wait."); return
@@ -1146,18 +1222,6 @@ class DepthCrafterGUI:
         except Exception as e: 
             _logger.warning(f"Warning (GUI save_config): Could not save config: {e}")
 
-    def toggle_keep_npz_dependent_options_state(self, *args):
-        if not (hasattr(self, 'process_as_segments_var') and hasattr(self, 'keep_intermediate_npz_var') and hasattr(self, 'keep_npz_dependent_widgets')):
-            return
-        active = self.process_as_segments_var.get() and self.keep_intermediate_npz_var.get()
-        state = tk.NORMAL if active else tk.DISABLED
-        for widget in self.keep_npz_dependent_widgets:
-            if hasattr(widget, 'configure'):
-                try:
-                    if isinstance(widget, ttk.Combobox): widget.configure(state='readonly' if active else 'disabled')
-                    else: widget.configure(state=state)
-                except tk.TclError: pass
-
     def toggle_dither_options_active_state(self, *args):
         if not (hasattr(self, 'process_as_segments_var') and hasattr(self, 'merge_dither_var')): return
         active = self.process_as_segments_var.get() and self.merge_dither_var.get()
@@ -1180,17 +1244,18 @@ class DepthCrafterGUI:
                     try: widget.configure(state=state)
                     except tk.TclError: pass
 
-    def toggle_percentile_norm_options_active_state(self, *args):
-        if not (hasattr(self, 'process_as_segments_var') and hasattr(self, 'merge_percentile_norm_var')): return
-        active = self.process_as_segments_var.get() and self.merge_percentile_norm_var.get()
+    def toggle_keep_npz_dependent_options_state(self, *args):
+        if not (hasattr(self, 'process_as_segments_var') and hasattr(self, 'keep_intermediate_npz_var') and hasattr(self, 'keep_npz_dependent_widgets')):
+            return
+        active = self.process_as_segments_var.get() and self.keep_intermediate_npz_var.get()
         state = tk.NORMAL if active else tk.DISABLED
-        for attr_name in ['lbl_low_perc', 'entry_low_perc', 'lbl_high_perc', 'entry_high_perc']:
-            if hasattr(self, attr_name):
-                widget = getattr(self, attr_name)
-                if widget and hasattr(widget, 'configure'):
-                    try: widget.configure(state=state)
-                    except tk.TclError: pass
-    
+        for widget in self.keep_npz_dependent_widgets:
+            if hasattr(widget, 'configure'):
+                try:
+                    if isinstance(widget, ttk.Combobox): widget.configure(state='readonly' if active else 'disabled')
+                    else: widget.configure(state=state)
+                except tk.TclError: pass
+
     def toggle_merge_related_options_active_state(self, *args):
         if not hasattr(self, 'process_as_segments_var'): return
         active = self.process_as_segments_var.get()
@@ -1223,6 +1288,38 @@ class DepthCrafterGUI:
         self.toggle_gamma_options_active_state()
         self.toggle_percentile_norm_options_active_state()
 
+    def toggle_percentile_norm_options_active_state(self, *args):
+        if not (hasattr(self, 'process_as_segments_var') and hasattr(self, 'merge_percentile_norm_var')): return
+        active = self.process_as_segments_var.get() and self.merge_percentile_norm_var.get()
+        state = tk.NORMAL if active else tk.DISABLED
+        for attr_name in ['lbl_low_perc', 'entry_low_perc', 'lbl_high_perc', 'entry_high_perc']:
+            if hasattr(self, attr_name):
+                widget = getattr(self, attr_name)
+                if widget and hasattr(widget, 'configure'):
+                    try: widget.configure(state=state)
+                    except tk.TclError: pass
+    
+    def toggle_secondary_output_options_active_state(self, *args):
+        if not hasattr(self, 'enable_dual_output_robust_norm') or not hasattr(self, 'secondary_output_widgets_references'):
+            return
+
+        active = self.enable_dual_output_robust_norm.get()
+        state = tk.NORMAL if active else tk.DISABLED
+
+        for widget_item in self.secondary_output_widgets_references:
+            if isinstance(widget_item, tuple): # Handle cases where we might store (label, entry_frame)
+                for item in widget_item:
+                    if hasattr(item, 'configure'):
+                        try:
+                            if isinstance(item, ttk.Combobox): item.configure(state='readonly' if active else 'disabled')
+                            else: item.configure(state=state)
+                        except tk.TclError: pass
+            elif hasattr(widget_item, 'configure'):
+                try:
+                    if isinstance(widget_item, ttk.Combobox): widget_item.configure(state='readonly' if active else 'disabled')
+                    else: widget_item.configure(state=state)
+                except tk.TclError: pass
+                
     def _apply_all_settings(self, settings_data: dict):
         for key, value_from_json in settings_data.items():
             if key == "target_fps": # Specific debug
@@ -1364,15 +1461,27 @@ class DepthCrafterGUI:
     def _execute_re_merge(self, remerge_args_dict):
         self.stop_event.clear(); self.progress["value"] = 0; self.progress["maximum"] = 1
         start_time = time.perf_counter()
+        primary_output_path = "N/A (Merge Failed)" # Initialize to ensure it's always defined
         try:
             if merge_depth_segments:
-                saved_path = merge_depth_segments.merge_depth_segments(**remerge_args_dict)
-            else: _logger.warning("Segment merging for N/A for re-merge action skipped: merge_depth_segments module not available.")
+                primary_output_path = merge_depth_segments.merge_depth_segments(**remerge_args_dict)
+                if primary_output_path:
+                    _logger.info(f"Re-Merge completed. Primary output saved to: {primary_output_path}")
+                else:
+                    _logger.warning("Re-Merge completed, but no primary output path was returned.")
+            else: 
+                _logger.warning("Segment merging for N/A for re-merge action skipped: merge_depth_segments module not available.")
         except Exception as e:
             _logger.exception(f"ERROR during re-merge execution: {e}")
+            self.status_message_var.set(f"Re-Merge Error: {e.__class__.__name__}") # Update GUI status
         finally:
             duration = format_duration(time.perf_counter() - start_time)
             _logger.info(f"--- Re-Merge for: {os.path.basename(remerge_args_dict['master_meta_path'])} finished in {duration}. ---")
+            # If a primary output path was generated, show it in status for better feedback
+            if primary_output_path and primary_output_path != "N/A (Merge Failed)":
+                self.status_message_var.set(f"Re-Merge Finished. Output: {os.path.basename(primary_output_path)}")
+            else:
+                self.status_message_var.set("Re-Merge Finished (No primary output).")
             self.message_queue.put(("progress", 1))
 
     def _execute_generate_segment_visuals_wrapper(self, gen_visual_args_dict):
@@ -1661,69 +1770,64 @@ class DepthCrafterGUI:
         else: # Segment folder does not exist
             return all_potential_segments_from_define, "fresh_processing"
 
-    def _handle_segment_merging(self, master_meta_filepath, original_basename, main_output_dir, master_meta):
+    def _handle_segment_merging(self, master_meta_filepath, original_basename, main_output_dir, master_meta) -> Tuple[bool, str]:
+        """
+        Handles the merging of segments, potentially generating a second robustly normalized output.
+        Returns a tuple: (bool indicating merge success, str path of the primary merged output).
+        """
         if not merge_depth_segments:
             _logger.warning(f"Segment merging for {original_basename} skipped: merge_depth_segments module not available.")
-            return False, "N/A (Merge module not available)"
+            return False, "N/A (Merge module not available - module missing)"
         
         out_fmt = self.merge_output_format_var.get()
         output_suffix = self.merge_output_suffix_var.get()
-        merged_base_name = f"{original_basename}{output_suffix}" # This is for the *first* output
+        merged_base_name = f"{original_basename}{output_suffix}"
 
         align_method = "linear_blend" if self.merge_alignment_method_var.get() == "Linear Blend" else "shift_scale"
-        merged_ok, actual_path = False, None
-        # --- TEMPORARY: HARDCODE FOR TESTING DUAL OUTPUT ROBUST NORM ---
-        # Set to True to enable the second output, False to disable it.
-        test_enable_dual_output = True 
         
-        # These values control the percentile range for the *second* output's normalization.
-        # Example: 0.5% of closest/farthest values are ignored.
-        test_robust_low_perc = 0.5 
-        test_robust_high_perc = 75.5 
-        
-        # These values define the output range for the robustly normalized depth map.
-        # 0.0=black (far), 1.0=white (close) is standard.
-        # If you want 0-25% output range for *all* meaningful depths (making everything dark), set max to 0.25:
-        # test_robust_output_min = 0.0
-        # test_robust_output_max = 0.25
-        # For your specific "0-25% (0=black or far side)" request where 0=FAR,
-        # using a lower `test_robust_high_perc` (e.g., 75.0) and full output range 0-1.0
-        # effectively clips/compresses the far background to dark.
-        test_robust_output_min = 0.0
-        test_robust_output_max = 0.25
+        enable_dual_output = self.enable_dual_output_robust_norm.get() 
+        robust_low_perc = self.robust_norm_low_percentile.get()
+        robust_high_perc = self.robust_norm_high_percentile.get()
+        robust_output_min = self.robust_norm_output_min.get()
+        robust_output_max = self.robust_norm_output_max.get()
+        robust_output_suffix_val = self.robust_output_suffix.get()
+        is_depth_far_black_val = self.is_depth_far_black.get()
 
-        # This suffix will be added to the filename of the second output.
-        test_robust_output_suffix = "_clipped_depth" 
-        
-        # This specifies the meaning of the raw depth values: True if 0=far/black, 1=close/white.
-        # Based on your clarification, DepthCrafter's visual output follows this, so True.
-        test_is_depth_far_black = True
-        # --- END TEMPORARY HARDCODED SETTINGS ---
         try:
-            actual_path = merge_depth_segments.merge_depth_segments(
-                master_meta_path=master_meta_filepath, output_path_arg=main_output_dir,
-                do_dithering=self.merge_dither_var.get(), dither_strength_factor=self.merge_dither_strength_var.get(),
-                apply_gamma_correction=self.merge_gamma_correct_var.get(), gamma_value=self.merge_gamma_value_var.get(),
-                use_percentile_norm=self.merge_percentile_norm_var.get(), norm_low_percentile=self.merge_norm_low_perc_var.get(),
-                norm_high_percentile=self.merge_norm_high_perc_var.get(), output_format=out_fmt,
+            primary_output_path = merge_depth_segments.merge_depth_segments(
+                master_meta_path=master_meta_filepath, 
+                output_path_arg=main_output_dir,
+                do_dithering=self.merge_dither_var.get(), 
+                dither_strength_factor=self.merge_dither_strength_var.get(),
+                apply_gamma_correction=self.merge_gamma_correct_var.get(), 
+                gamma_value=self.merge_gamma_value_var.get(),
+                use_percentile_norm=self.merge_percentile_norm_var.get(), 
+                norm_low_percentile=self.merge_norm_low_perc_var.get(),
+                norm_high_percentile=self.merge_norm_high_perc_var.get(), 
+                output_format=out_fmt,
                 merge_alignment_method=align_method, 
                 output_filename_override_base=merged_base_name,
-                enable_dual_output_robust_norm=test_enable_dual_output,
-                robust_norm_low_percentile=test_robust_low_perc,
-                robust_norm_high_percentile=test_robust_high_perc,
-                robust_norm_output_min=test_robust_output_min,
-                robust_norm_output_max=test_robust_output_max,
-                robust_output_suffix=test_robust_output_suffix,
-                is_depth_far_black=test_is_depth_far_black
+                enable_dual_output_robust_norm=enable_dual_output,
+                robust_norm_low_percentile=robust_low_perc,
+                robust_norm_high_percentile=robust_high_perc,
+                robust_norm_output_min=robust_output_min,
+                robust_norm_output_max=robust_output_max,
+                robust_output_suffix=robust_output_suffix_val,
+                is_depth_far_black=is_depth_far_black_val
             )
-            merged_ok = bool(actual_path) # Set merged_ok based on whether actual_path is valid
+            
+            # If primary_output_path is None, the merge failed or didn't produce a path
+            if primary_output_path is None:
+                _logger.error(f"merge_depth_segments returned None for {original_basename}. Merge considered failed.")
+                return False, f"N/A (Merge module returned no path)"
+            else:
+                _logger.info(f"Primary merge for {original_basename} successful. Output: {primary_output_path}")
+                return True, primary_output_path # Successful merge
+                
         except Exception as e: 
-            _logger.exception(f"Exception calling merge_depth_segments for {original_basename}: {e}")
-            # Ensure the GUI status reflects the error
+            _logger.exception(f"Exception during merge_depth_segments call for {original_basename}: {e}")
             self.status_message_var.set(f"Merge Error: {e.__class__.__name__} for {original_basename}")
-            # It's good practice to re-raise if the error is critical to propagate it
-            # so higher-level GUI wrappers (like start_processing) can handle UI state changes.
-            raise # Re-raise the exception to be caught by the _execute_re_merge_wrapper's finally block
+            return False, f"N/A (Merge failed due to {e.__class__.__name__})"
         
     def _initialize_master_metadata_entry(self, original_basename, job_info_for_original_details, total_expected_jobs_for_this_video):
         entry = {
@@ -2115,6 +2219,7 @@ class DepthCrafterGUI:
             except tk.TclError: pass
 
         self.toggle_merge_related_options_active_state()
+        self.toggle_secondary_output_options_active_state()
 
     def _show_help_for(self, help_key: str):
         """Displays help content for a given key in a Tkinter Toplevel window."""

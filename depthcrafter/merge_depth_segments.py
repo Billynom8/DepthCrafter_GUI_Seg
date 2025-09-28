@@ -379,61 +379,74 @@ def _apply_mp4_postprocessing_refactored(
     return video_processed
 
 def _determine_output_path(
-    out_path_arg: str, 
-    master_meta_p: str, 
+    out_path_arg: str,
+    master_meta_p: str,
     original_basename_from_meta: str,
     out_format: str,
-    output_filename_override_base: Optional[str] = None
+    final_filename_base_override: Optional[str] = None # This is the complete desired base filename (e.g., "myvideo_depth" or "myvideo_clipped_depth")
 ) -> str:
-    output_path_final = None
-    current_base_for_naming = output_filename_override_base if output_filename_override_base else original_basename_from_meta
+    """
+    Determines the full output path, handling sequence folders, single files, and filename overrides.
+    Ensures that final_filename_base_override takes precedence for the filename portion.
 
+    Args:
+        out_path_arg (str): User-provided output path. Can be a directory path or a specific file path.
+        master_meta_p (str): Path to the master metadata file (used for default output directory).
+        original_basename_from_meta (str): The original base name of the video.
+        out_format (str): Desired output format (e.g., "mp4", "png_sequence").
+        final_filename_base_override (Optional[str]): The complete desired base filename
+                                                      (e.g., "myvideo_depth" or "myvideo_clipped_depth").
+                                                      If None, `original_basename_from_meta` is used.
+
+    Returns:
+        str: The full, resolved output path.
+    """
+    output_path_final = None
+
+    # Determine the effective base name to use for the output file/folder.
+    # This `final_filename_base_override` already includes any suffixes (e.g., "_depth", "_clipped_depth").
+    effective_base_filename = final_filename_base_override if final_filename_base_override else original_basename_from_meta
+
+    # Determine the target directory for the output
+    target_output_dir = None
     if out_path_arg:
-        path_is_dir = os.path.isdir(out_path_arg)
-        if out_format in ["png_sequence", "exr_sequence"]:
-            base_dir_for_sequence = out_path_arg
-            seq_suffix = "png_seq" if out_format == "png_sequence" else "exr_seq"
-            if not path_is_dir and (out_path_arg.endswith(seq_suffix) or not os.path.splitext(out_path_arg)[1]):
-                 output_path_final = out_path_arg
-            else:
-                base_dir_for_sequence = out_path_arg if path_is_dir else os.path.dirname(out_path_arg)
-                if not base_dir_for_sequence : base_dir_for_sequence = "."
-                subfolder_name = f"{current_base_for_naming}_{seq_suffix}"
-                if not output_filename_override_base and os.path.exists(os.path.join(base_dir_for_sequence, subfolder_name)):
-                    ts = time.strftime("_%Y%m%d-%H%M%S")
-                    subfolder_name = f"{current_base_for_naming}_{seq_suffix}{ts}"
-                output_path_final = os.path.join(base_dir_for_sequence, subfolder_name)
-            _logger.debug(f"  Sequence output resolved to: {output_path_final}")
-            os.makedirs(output_path_final, exist_ok=True)
-        else: # Single file formats
-            if path_is_dir:
-                fname = f"{current_base_for_naming}.{out_format}"
-                output_path_final = os.path.join(out_path_arg, fname)
-                os.makedirs(out_path_arg, exist_ok=True)
-            else:
-                output_path_final = out_path_arg
-                parent_dir = os.path.dirname(output_path_final)
-                if parent_dir: os.makedirs(parent_dir, exist_ok=True)
-            _logger.debug(f"  Single file output resolved to: {output_path_final}")
-            if os.path.exists(output_path_final) and not path_is_dir:
-                 _logger.warning(f"  Output file {output_path_final} exists and will be overwritten.")
-    else: # Auto-generate path
-        meta_dir = os.path.dirname(master_meta_p) if master_meta_p and os.path.dirname(master_meta_p) else "."
-        os.makedirs(meta_dir, exist_ok=True)
-        if out_format in ["png_sequence", "exr_sequence"]:
-            seq_type_name = 'png' if 'png' in out_format else 'exr'
-            seq_folder_base_name = f"{current_base_for_naming}_{seq_type_name}_seq"
-            output_path_final = os.path.join(meta_dir, seq_folder_base_name)
-            if os.path.exists(output_path_final):
-                unique_suffix = time.strftime("_%Y%m%d%H%M%S")
-                output_path_final = os.path.join(meta_dir, f"{seq_folder_base_name}{unique_suffix}")
-            os.makedirs(output_path_final, exist_ok=True)
-        else: # Single file
-            output_path_final = os.path.join(meta_dir, f"{current_base_for_naming}.{out_format}")
-            if os.path.exists(output_path_final):
-                _logger.warning(f"  Auto-generated output file {output_path_final} exists, will overwrite.")
-        _logger.debug(f"  Auto-generated output path: {output_path_final}")
+        if os.path.isdir(out_path_arg): # If out_path_arg is an existing directory
+            target_output_dir = out_path_arg
+        elif not os.path.exists(out_path_arg) and "." not in os.path.basename(out_path_arg): # If it's a non-existing path without extension, assume directory
+             target_output_dir = out_path_arg
+        else: # out_path_arg is an existing file, or a new file path (contains an extension)
+            target_output_dir = os.path.dirname(out_path_arg)
+            if not target_output_dir: target_output_dir = "." # Fallback if only a filename was provided
+    else: # No out_path_arg, use default based on master_meta_p
+        target_output_dir = os.path.dirname(master_meta_p) if master_meta_p and os.path.dirname(master_meta_p) else "."
     
+    os.makedirs(target_output_dir, exist_ok=True) # Ensure the target directory exists
+
+
+    if out_format in ["png_sequence", "exr_sequence"]:
+        # For sequences, the output path is a new subfolder within target_output_dir
+        seq_type_suffix = "png_seq" if out_format == "png_sequence" else "exr_seq"
+        subfolder_name = f"{effective_base_filename}_{seq_type_suffix}"
+        
+        # Auto-generate unique name if folder exists and final_filename_base_override was not explicitly set
+        # This prevents overwriting previous auto-generated sequence folders unless explicitly named.
+        constructed_seq_path = os.path.join(target_output_dir, subfolder_name)
+        if not final_filename_base_override and os.path.exists(constructed_seq_path):
+            ts = time.strftime("_%Y%m%d-%H%M%S")
+            subfolder_name = f"{effective_base_filename}_{seq_type_suffix}{ts}"
+            output_path_final = os.path.join(target_output_dir, subfolder_name)
+        else:
+            output_path_final = constructed_seq_path
+        
+        _logger.debug(f"  Sequence output resolved to: {output_path_final}")
+        os.makedirs(output_path_final, exist_ok=True) # Ensure the sequence directory itself exists
+        
+    else: # Single file formats (mp4, exr)
+        # Construct the filename using the effective_base_filename and the format's extension.
+        extension = out_format.replace('main10_','') # Remove main10 for filename extension
+        output_path_final = os.path.join(target_output_dir, f"{effective_base_filename}.{extension}")
+        _logger.debug(f"  Single file output resolved to: {output_path_final}")
+
     if output_path_final is None:
         _logger.critical("Could not determine a valid output path.")
         raise ValueError("Could not determine a valid output path.")
@@ -626,7 +639,7 @@ def merge_depth_segments(
                 master_meta_path,
                 original_basename_from_meta, # This is for determining the base directory, actual filename comes from robust_output_base_name
                 file_extension_for_path,
-                robust_output_base_name # Pass the new base name for this second output
+                final_filename_base_override=robust_output_base_name # Pass the new base name for this second output
             )
             _save_output_to_disk(robust_video_to_save, robust_output_path, output_format, final_fps)
 
