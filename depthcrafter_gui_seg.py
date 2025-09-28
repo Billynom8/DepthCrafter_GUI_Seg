@@ -1482,13 +1482,24 @@ class DepthCrafterGUI:
         _logger.info(f"Finished processing for {original_basename}. Overall Status: {master_meta_for_this_vid['overall_status']}.")
         
         main_output_dir, segment_subfolder_path, was_segments = self._determine_video_paths_and_processing_mode(original_basename, master_meta_for_this_vid)
-        master_meta_filepath, merge_success, final_merged_path = None, False, "N/A (Merge not applicable or failed)"
+        master_meta_filepath, meta_saved = None, False
+        # --- FIX: Initialize merge_success and final_merged_path BEFORE conditional assignment ---
+        merge_success, final_merged_path = False, "N/A (Merge not applicable or failed)"
+        
         try:
             master_meta_filepath, meta_saved = self._save_master_metadata_and_cleanup_segment_json(master_meta_for_this_vid, original_basename, main_output_dir, was_segments, segment_subfolder_path)
+            
             if was_segments and meta_saved and master_meta_for_this_vid["overall_status"] in ["all_success", "partial_success"]:
-                merge_success, final_merged_path = self._handle_segment_merging(master_meta_filepath, original_basename, main_output_dir, master_meta_for_this_vid)
+                try: # Nested try-except to catch errors specifically from merging
+                    merge_success, final_merged_path = self._handle_segment_merging(master_meta_filepath, original_basename, main_output_dir, master_meta_for_this_vid)
+                except Exception as e_merge:
+                    _logger.error(f"Error during segment merging for {original_basename}: {e_merge}", exc_info=True)
+                    self.status_message_var.set(f"Merge Failed: {e_merge.__class__.__name__}")
+                    merge_success, final_merged_path = False, f"N/A (Merge failed due to {e_merge.__class__.__name__})"
             elif was_segments:
+                # If segments were processed but not merged (e.g., all_failed status, or no successful segments)
                 _logger.debug(f"Skipping merge for {original_basename} (status: {master_meta_for_this_vid['overall_status']}, meta_saved: {meta_saved}). Segments remain in {segment_subfolder_path or 'N/A'}")
+                # No change to merge_success/final_merged_path as they were initialized to False/N/A
             
             if self.save_final_output_json_var.get():
                 self._save_final_output_sidecar_json(original_basename, final_merged_path, master_meta_filepath, master_meta_for_this_vid, was_segments, merge_success)
@@ -1497,6 +1508,7 @@ class DepthCrafterGUI:
                 self._cleanup_segment_folder(segment_subfolder_path, original_basename, master_meta_for_this_vid)
         except Exception as e:
             _logger.exception(f"Error during finalization for {original_basename}: {e}")
+            self.status_message_var.set(f"Finalization Error: {e.__class__.__name__} for {original_basename}")
 
         final_status = master_meta_for_this_vid.get("overall_status", "all_failed")
 
@@ -1655,10 +1667,37 @@ class DepthCrafterGUI:
         
         out_fmt = self.merge_output_format_var.get()
         output_suffix = self.merge_output_suffix_var.get()
-        merged_base_name = f"{original_basename}{output_suffix}"
+        merged_base_name = f"{original_basename}{output_suffix}" # This is for the *first* output
 
         align_method = "linear_blend" if self.merge_alignment_method_var.get() == "Linear Blend" else "shift_scale"
         merged_ok, actual_path = False, None
+        # --- TEMPORARY: HARDCODE FOR TESTING DUAL OUTPUT ROBUST NORM ---
+        # Set to True to enable the second output, False to disable it.
+        test_enable_dual_output = True 
+        
+        # These values control the percentile range for the *second* output's normalization.
+        # Example: 0.5% of closest/farthest values are ignored.
+        test_robust_low_perc = 0.5 
+        test_robust_high_perc = 75.5 
+        
+        # These values define the output range for the robustly normalized depth map.
+        # 0.0=black (far), 1.0=white (close) is standard.
+        # If you want 0-25% output range for *all* meaningful depths (making everything dark), set max to 0.25:
+        # test_robust_output_min = 0.0
+        # test_robust_output_max = 0.25
+        # For your specific "0-25% (0=black or far side)" request where 0=FAR,
+        # using a lower `test_robust_high_perc` (e.g., 75.0) and full output range 0-1.0
+        # effectively clips/compresses the far background to dark.
+        test_robust_output_min = 0.0
+        test_robust_output_max = 0.25
+
+        # This suffix will be added to the filename of the second output.
+        test_robust_output_suffix = "_clipped_depth" 
+        
+        # This specifies the meaning of the raw depth values: True if 0=far/black, 1=close/white.
+        # Based on your clarification, DepthCrafter's visual output follows this, so True.
+        test_is_depth_far_black = True
+        # --- END TEMPORARY HARDCODED SETTINGS ---
         try:
             actual_path = merge_depth_segments.merge_depth_segments(
                 master_meta_path=master_meta_filepath, output_path_arg=main_output_dir,
@@ -1667,22 +1706,24 @@ class DepthCrafterGUI:
                 use_percentile_norm=self.merge_percentile_norm_var.get(), norm_low_percentile=self.merge_norm_low_perc_var.get(),
                 norm_high_percentile=self.merge_norm_high_perc_var.get(), output_format=out_fmt,
                 merge_alignment_method=align_method, 
-                output_filename_override_base=merged_base_name 
+                output_filename_override_base=merged_base_name,
+                enable_dual_output_robust_norm=test_enable_dual_output,
+                robust_norm_low_percentile=test_robust_low_perc,
+                robust_norm_high_percentile=test_robust_high_perc,
+                robust_norm_output_min=test_robust_output_min,
+                robust_norm_output_max=test_robust_output_max,
+                robust_output_suffix=test_robust_output_suffix,
+                is_depth_far_black=test_is_depth_far_black
             )
-            merged_ok = bool(actual_path)
+            merged_ok = bool(actual_path) # Set merged_ok based on whether actual_path is valid
         except Exception as e: 
             _logger.exception(f"Exception calling merge_depth_segments for {original_basename}: {e}")
+            # Ensure the GUI status reflects the error
+            self.status_message_var.set(f"Merge Error: {e.__class__.__name__} for {original_basename}")
+            # It's good practice to re-raise if the error is critical to propagate it
+            # so higher-level GUI wrappers (like start_processing) can handle UI state changes.
+            raise # Re-raise the exception to be caught by the _execute_re_merge_wrapper's finally block
         
-        final_path_to_return = "N/A (Merge failed/path not returned)"
-        if merged_ok and actual_path:
-            final_path_to_return = actual_path
-        elif merged_ok : 
-             _logger.warning(f"Warning: merge_depth_segments completed for {original_basename} but did not return a valid output path. Final JSON might use a guessed path.") 
-             effective_out_fmt = out_fmt.replace("_main10", "")
-             final_path_to_return = os.path.join(main_output_dir, f"{merged_base_name}.{effective_out_fmt}") 
-        
-        return merged_ok, final_path_to_return
-
     def _initialize_master_metadata_entry(self, original_basename, job_info_for_original_details, total_expected_jobs_for_this_video):
         entry = {
             "original_video_basename": original_basename,

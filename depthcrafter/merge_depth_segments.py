@@ -30,6 +30,89 @@ except ImportError:
     _logger.warning("OpenEXR/Imath libraries not found. EXR features will be limited/unavailable. Context: merge_depth_segments.py")
 
 
+def _apply_robust_global_normalization(
+    raw_stitched_depth_frames: np.ndarray,
+    low_perc_for_range: float,
+    high_perc_for_range: float,
+    target_output_min: float = 0.0,
+    target_output_max: float = 1.0,
+    is_far_black: bool = True
+) -> np.ndarray:
+    """
+    Applies a robust global normalization to a raw stitched depth map
+    based on percentiles, mapping to a specified output range.
+
+    Args:
+        raw_stitched_depth_frames (np.ndarray): The 3D NumPy array of raw depth frames (H, W, Frames).
+        low_perc_for_range (float): The percentile (e.g., 0.1) that defines the numerically smallest
+                                    stable raw depth value.
+        high_perc_for_range (float): The percentile (e.g., 99.9) that defines the numerically largest
+                                     stable raw depth value.
+        target_output_min (float, optional): The desired output minimum value (e.g., 0.0 for black). Defaults to 0.0.
+        target_output_max (float, optional): The desired output maximum value (e.g., 1.0 for white). Defaults to 1.0.
+        is_far_black (bool, optional): True if far objects are black (0) and close objects are white (1)
+                                       in the *final visual output*. Defaults to True (common for DepthCrafter visual output).
+
+    Returns:
+        np.ndarray: The normalized and clipped depth frames.
+    """
+    if raw_stitched_depth_frames.size == 0:
+        _logger.warning("Attempted robust global normalization on empty frames. Returning empty array.")
+        return np.array([])
+
+    # Flatten and filter out non-finite values for robust percentile calculation
+    filtered_data = raw_stitched_depth_frames[np.isfinite(raw_stitched_depth_frames)].flatten()
+
+    if filtered_data.size == 0:
+        _logger.warning("No finite depth values found for percentile calculation. Returning zeros.")
+        return np.zeros_like(raw_stitched_depth_frames, dtype=np.float32)
+
+    # Determine raw bounds based on percentiles.
+    # val_at_low_perc will be the numerically smallest raw depth (e.g., the 0.1th percentile).
+    # val_at_high_perc will be the numerically largest raw depth (e.g., the 99.9th percentile).
+    val_at_low_perc = np.percentile(filtered_data, low_perc_for_range)
+    val_at_high_perc = np.percentile(filtered_data, high_perc_for_range)
+
+    # Assume DepthCrafter raw output is "Inverse Depth": smaller raw value = farther, larger raw value = closer.
+    # Based on this, we define the effective raw bounds for mapping:
+    effective_raw_farthest_val = val_at_low_perc
+    effective_raw_closest_val = val_at_high_perc
+
+    # Handle edge case where the range is extremely small or zero
+    if effective_raw_closest_val <= effective_raw_farthest_val + 1e-6: # Add small epsilon to handle near-zero range
+        _logger.warning(f"Robust normalization: Effective closest raw val ({effective_raw_closest_val:.4f}) is effectively <= effective farthest raw val ({effective_raw_farthest_val:.4f}). Returning uniform output.")
+        # If range is zero, all values map to the mid-point of the target output range
+        return np.full_like(raw_stitched_depth_frames, (target_output_min + target_output_max) / 2.0, dtype=np.float32)
+
+    s_custom, t_custom = 1.0, 0.0
+
+    # Calculate custom scale and shift for the desired final visual output (Far=Black, Close=White)
+    if is_far_black: # If final visual output wants Far=Black (0) and Close=White (1)
+        # Map the effective_raw_farthest_val to target_output_min (black side)
+        # Map the effective_raw_closest_val to target_output_max (white side)
+        s_custom = (target_output_max - target_output_min) / (effective_raw_closest_val - effective_raw_farthest_val)
+        t_custom = target_output_min - (s_custom * effective_raw_farthest_val)
+    else: # If final visual output wants Close=Black (0) and Far=White (1)
+        # Map the effective_raw_closest_val to target_output_min (black side)
+        # Map the effective_raw_farthest_val to target_output_max (white side)
+        s_custom = (target_output_max - target_output_min) / (effective_raw_farthest_val - effective_raw_closest_val)
+        t_custom = target_output_min - (s_custom * effective_raw_closest_val)
+
+
+    # Apply transformation
+    normalized_frames = (raw_stitched_depth_frames * s_custom) + t_custom
+
+    # Clip to the target output range
+    clipped_frames = np.clip(normalized_frames, target_output_min, target_output_max)
+
+    _logger.debug(f"Robust norm: Raw percentiles low={val_at_low_perc:.4f}, high={val_at_high_perc:.4f}")
+    _logger.debug(f"Robust norm: Effective raw farthest={effective_raw_farthest_val:.4f}, closest={effective_raw_closest_val:.4f}")
+    _logger.debug(f"Robust norm: Calculated s_custom={s_custom:.4f}, t_custom={t_custom:.4f}")
+    _logger.debug(f"Robust norm output range: [{target_output_min:.4f}, {target_output_max:.4f}]")
+    _logger.debug(f"Robust norm final min/max (after clip): {clipped_frames.min():.4f}/{clipped_frames.max():.4f}")
+
+    return clipped_frames
+
 def save_single_frame_exr(frame_data: np.ndarray, output_path: str):
     if not _HAS_OPENEXR:
         _logger.error("OpenEXR/Imath libraries not found by save_single_frame_exr. Cannot save EXR.")
@@ -412,22 +495,33 @@ def merge_depth_segments(
     dither_strength_factor: float = 0.5,    
     apply_gamma_correction: bool = False,
     gamma_value: float = 1.5,
-    use_percentile_norm: bool = False,
-    norm_low_percentile: float = 0.1,
-    norm_high_percentile: float = 99.9,
+    use_percentile_norm: bool = False, # Standard normalization setting
+    norm_low_percentile: float = 0.1,  # Standard normalization setting
+    norm_high_percentile: float = 99.9, # Standard normalization setting
     output_format: str = "mp4",
     merge_alignment_method: str = "shift_scale",
-    output_filename_override_base: Optional[str] = None
+    output_filename_override_base: Optional[str] = None,
+    # --- NEW PARAMETERS FOR DUAL OUTPUT ROBUST NORMALIZATION ---
+    enable_dual_output_robust_norm: bool = False,
+    robust_norm_low_percentile: float = 0.1,
+    robust_norm_high_percentile: float = 99.9,
+    robust_norm_output_min: float = 0.0,
+    robust_norm_output_max: float = 1.0,
+    robust_output_suffix: str = "_robust_norm_depth",
+    is_depth_far_black: bool = True # Assuming 0=far/black, 1=close/white for DepthCrafter visual outputs
 ) -> Optional[str]:
     
     _logger.info(f"Starting depth segment merging process... Format: {output_format}, Alignment: {merge_alignment_method}")
     _logger.debug(f"Merge Settings - Dithering: {do_dithering}, Strength: {dither_strength_factor}")
     _logger.debug(f"Merge Settings - Gamma: {apply_gamma_correction}, Value: {gamma_value}")
-    _logger.debug(f"Merge Settings - Percentile Norm: {use_percentile_norm}, Low: {norm_low_percentile}%, High: {norm_high_percentile}%")
+    _logger.debug(f"Merge Settings - Standard Percentile Norm: {use_percentile_norm}, Low: {norm_low_percentile}%, High: {norm_high_percentile}%")
+    if enable_dual_output_robust_norm:
+        _logger.debug(f"Merge Settings - Robust Dual Output Enabled. Low: {robust_norm_low_percentile}%, High: {robust_norm_high_percentile}%, Out Min: {robust_norm_output_min}, Out Max: {robust_norm_output_max}, Suffix: '{robust_output_suffix}'")
+
 
     final_video_unclipped = None
     final_fps = 30.0
-    actual_saved_output_path = None
+    actual_saved_output_path = None # This will store the path of the *first* (standard) output
 
     try:
         meta_data, N_overlap, sorted_jobs, base_dir = _load_and_validate_metadata(master_meta_path)
@@ -457,48 +551,88 @@ def merge_depth_segments(
             _logger.warning(f"Warning: Invalid FPS {final_fps}. Defaulting to 30.0.")
             final_fps = 30.0
 
-        normalized_video = normalize_video_data(
-            final_video_unclipped, 
-            use_percentile_norm, 
-            norm_low_percentile, 
-            norm_high_percentile
-        )
-        
-        video_to_save = normalized_video
-        if "mp4" in output_format.lower(): # Covers "mp4", "main10_mp4"
-            video_to_save = _apply_mp4_postprocessing_refactored(
-                normalized_video,
-                apply_gamma_correction,
-                gamma_value,
-                do_dithering,
-                dither_strength_factor
-            )
-        else:
-            _logger.debug(f"Post-processing (gamma/dither) skipped for non-MP4 output format: {output_format}.")
-        
-        _logger.debug(f"Final video array for saving: Shape {video_to_save.shape}, Dtype {str(video_to_save.dtype)}, Min {video_to_save.min():.4f}, Max {video_to_save.max():.4f}")
-
         original_basename_from_meta = meta_data.get("original_video_basename", "merged_video")
-        file_extension_for_path = "mp4"
+        file_extension_for_path = "mp4" # Default for _determine_output_path suffix logic
         if output_format == "png_sequence":
             file_extension_for_path = "png_sequence"
         elif output_format == "exr_sequence":
             file_extension_for_path = "exr_sequence"
         elif output_format == "exr":
             file_extension_for_path = "exr"
-
-        actual_saved_output_path = _determine_output_path(
+        
+        # --- FIRST OUTPUT: Standard Normalization & Save ---
+        _logger.info("Generating standard output...")
+        standard_normalized_video = normalize_video_data(
+            final_video_unclipped, # Use original unclipped data
+            use_percentile_norm,
+            norm_low_percentile,
+            norm_high_percentile
+        )
+        
+        standard_video_to_save = standard_normalized_video
+        if "mp4" in output_format.lower(): # Covers "mp4", "main10_mp4"
+            standard_video_to_save = _apply_mp4_postprocessing_refactored(
+                standard_normalized_video,
+                apply_gamma_correction,
+                gamma_value,
+                do_dithering,
+                dither_strength_factor
+            )
+        
+        standard_output_path = _determine_output_path(
             output_path_arg,
             master_meta_path,
             original_basename_from_meta,
             file_extension_for_path,
-            output_filename_override_base
+            output_filename_override_base # Use the potentially overridden base for first output
         )
         
-        _save_output_to_disk(video_to_save, actual_saved_output_path, output_format, final_fps)
+        _save_output_to_disk(standard_video_to_save, standard_output_path, output_format, final_fps)
+        actual_saved_output_path = standard_output_path # This is the primary output path
+
+        # --- SECOND OUTPUT (if enabled): Robust Global Normalization & Save ---
+        if enable_dual_output_robust_norm:
+            _logger.info("Generating robustly normalized (secondary) output...")
+            robust_normalized_video = _apply_robust_global_normalization(
+                final_video_unclipped, # Use original unclipped data again
+                robust_norm_low_percentile,
+                robust_norm_high_percentile,
+                robust_norm_output_min,
+                robust_norm_output_max,
+                is_depth_far_black # Pass the convention explicitly
+            )
+
+            robust_video_to_save = robust_normalized_video
+            if "mp4" in output_format.lower(): # Apply same post-processing if target is MP4
+                robust_video_to_save = _apply_mp4_postprocessing_refactored(
+                    robust_normalized_video,
+                    apply_gamma_correction, # Use same gamma/dither settings as first output
+                    gamma_value,
+                    do_dithering,
+                    dither_strength_factor
+                )
+
+            # Determine path for the second output with the unique suffix
+            # Ensure the robust suffix is applied correctly even if override_base was used
+            robust_output_base_name = f"{original_basename_from_meta}{robust_output_suffix}"
+            if output_filename_override_base:
+                # If output_filename_override_base was already given, append robust_output_suffix to it.
+                # Example: If original was "video.mp4", override_base "_fancy_depth", suffix "_clipped_depth"
+                # Result: "video_fancy_depth_clipped_depth.mp4"
+                robust_output_base_name = f"{output_filename_override_base}{robust_output_suffix}"
+            
+            robust_output_path = _determine_output_path(
+                output_path_arg,
+                master_meta_path,
+                original_basename_from_meta, # This is for determining the base directory, actual filename comes from robust_output_base_name
+                file_extension_for_path,
+                robust_output_base_name # Pass the new base name for this second output
+            )
+            _save_output_to_disk(robust_video_to_save, robust_output_path, output_format, final_fps)
 
     except Exception as e:
         _logger.critical(f"CRITICAL ERROR during merge process: {e}", exc_info=True)
+        # Re-raise to ensure GUI gets the error for its message queue and UI state
         raise
     
     _logger.info("Depth segment merging process finished successfully.")
