@@ -743,6 +743,7 @@ class DepthCrafterGUI:
         _logger.info(f"--- Starting Re-Merge for: {os.path.basename(meta_file)} ---")
         self._set_ui_processing_state(True)
         self.processing_thread = threading.Thread(target=self._execute_re_merge_wrapper, args=(args,), daemon=True); self.processing_thread.start()
+        self.root.after(100, self.process_queue)
 
     def start_thread(self):
         if self.processing_thread and self.processing_thread.is_alive():
