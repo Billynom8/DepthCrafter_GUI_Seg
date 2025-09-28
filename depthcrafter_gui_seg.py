@@ -54,7 +54,7 @@ except ImportError:
 
 from typing import Optional, Tuple, List, Dict
 
-GUI_VERSION = "25.09.12"
+GUI_VERSION = "25.09.28"
 _HELP_TEXTS = {}
 
 def _create_hover_tooltip(widget, help_key):
@@ -612,6 +612,10 @@ class DepthCrafterGUI:
         ctrl_frame = tk.Frame(self.root)
         ctrl_frame.pack(pady=(5, 10), padx=10, fill="x", expand=False)
 
+        # --- Container frame for buttons to center them ---
+        button_container_frame = tk.Frame(ctrl_frame)
+        button_container_frame.pack(anchor="center") # Centers the button_container_frame within ctrl_frame
+
         # --- Current Processing Information Frame ---
         processing_info_frame = tk.LabelFrame(self.root, text="Current Processing Information")
         processing_info_frame.pack(fill="x", padx=10, pady=5, expand=False)
@@ -642,22 +646,22 @@ class DepthCrafterGUI:
         _create_hover_tooltip(lbl_frames, "current_frames") # Add tooltip
         row_idx += 1
 
-        start_frame = tk.Frame(ctrl_frame); start_frame.pack(side=tk.LEFT, padx=(0,2))
+        start_frame = tk.Frame(button_container_frame); start_frame.pack(side=tk.LEFT, padx=(0,2))
         self.start_button = tk.Button(start_frame, text="Start", command=self.start_thread, width=10)
         self.start_button.pack(side=tk.LEFT)
         _create_hover_tooltip(self.start_button, "start_button")        
 
-        cancel_frame = tk.Frame(ctrl_frame); cancel_frame.pack(side=tk.LEFT, padx=(2,2))
+        cancel_frame = tk.Frame(button_container_frame); cancel_frame.pack(side=tk.LEFT, padx=(2,2))
         self.cancel_button = tk.Button(cancel_frame, text="Cancel", command=self.stop_processing, width=10, state=tk.DISABLED)
         self.cancel_button.pack(side=tk.LEFT)
         _create_hover_tooltip(self.cancel_button, "cancel_button")
 
-        remerge_frame = tk.Frame(ctrl_frame); remerge_frame.pack(side=tk.LEFT, padx=(2,2))
+        remerge_frame = tk.Frame(button_container_frame); remerge_frame.pack(side=tk.LEFT, padx=(2,2))
         self.remerge_button = tk.Button(remerge_frame, text="Re-Merge Segments", command=self.re_merge_from_gui, width=18)
         self.remerge_button.pack(side=tk.LEFT)
         _create_hover_tooltip(self.remerge_button, "remerge_button")
 
-        genvis_frame = tk.Frame(ctrl_frame); genvis_frame.pack(side=tk.LEFT, padx=(2,2))
+        genvis_frame = tk.Frame(button_container_frame); genvis_frame.pack(side=tk.LEFT, padx=(2,2))
         self.generate_visuals_button = tk.Button(genvis_frame, text="Generate Seg Visuals", command=self.generate_segment_visuals_from_gui, width=20)
         self.generate_visuals_button.pack(side=tk.LEFT)
         _create_hover_tooltip(self.generate_visuals_button, "generate_visuals_button")
