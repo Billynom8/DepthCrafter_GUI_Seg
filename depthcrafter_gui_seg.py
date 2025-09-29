@@ -144,7 +144,7 @@ class DepthCrafterGUI:
         self.target_height = tk.IntVar(value=384) # Initial default height
         self.target_width = tk.IntVar(value=640)  # Initial default width
         self.debug_logging_enabled = tk.BooleanVar(value=False) # Default to OFF (INFO level)
-        self.enable_dual_output_robust_norm = tk.BooleanVar(value=True) # Default to ON for testing
+        self.enable_dual_output_robust_norm = tk.BooleanVar(value=False) # Default to ON for testing
         self.robust_norm_low_percentile = tk.DoubleVar(value=0.0)      # Example default
         self.robust_norm_high_percentile = tk.DoubleVar(value=75.5)     # Example default
         self.robust_norm_output_min = tk.DoubleVar(value=0.0)
@@ -2222,8 +2222,11 @@ class DepthCrafterGUI:
                     self.file_menu.entryconfig(item_label, state=new_state)
             except tk.TclError: pass
 
-        self.toggle_merge_related_options_active_state()
-        self.toggle_secondary_output_options_active_state()
+        # --- Phase 2: If processing has *finished*, re-evaluate conditional states ---
+        # This prevents conditional toggles from overriding the DISABLED state prematurely.
+        if not is_processing:
+            self.toggle_merge_related_options_active_state()
+            self.toggle_secondary_output_options_active_state()
 
     def _show_help_for(self, help_key: str):
         """Displays help content for a given key in a Tkinter Toplevel window."""
