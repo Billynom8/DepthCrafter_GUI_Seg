@@ -54,9 +54,32 @@ except ImportError:
 
 from typing import Optional, Tuple, List, Dict
 
-GUI_VERSION = "25.09.28"
+try:
+    from ttkthemes import ThemedTk
+    THEMEDTK_AVAILABLE = True
+except ImportError:
+    THEMEDTK_AVAILABLE = False
+    _logger.warning("ttkthemes not found. Dark mode functionality will be disabled.")
+
+GUI_VERSION = "25.09.29"
 _HELP_TEXTS = {}
 
+DARK_MODE_COLORS = {
+    "bg": "#2b2b2b",
+    "fg": "white",
+    "entry_bg": "#3c3c3c",
+    "tooltip_bg": "#4a4a4a",
+    "tooltip_fg": "white",
+    "theme_name": "black", # A common ttkthemes dark theme
+}
+LIGHT_MODE_COLORS = {
+    "bg": "#d9d9d9",
+    "fg": "black",
+    "entry_bg": "#ffffff",
+    "tooltip_bg": "#ffffe0",
+    "tooltip_fg": "black",
+    "theme_name": "default", # A solid default theme
+}
 def _create_hover_tooltip(widget, help_key):
     """Creates a mouse-over tooltip for the given widget using text from _HELP_TEXTS."""
     if help_key in _HELP_TEXTS:
@@ -81,12 +104,25 @@ class Tooltip:
         x += self.widget.winfo_rootx() + 25
         y += self.widget.winfo_rooty() + 20
 
+        # Find the main root window (it holds the app_instance attribute)
+        root_window = self.widget._root() # A common tkinter internal way to get the root Tk object
+        
+        # Access the main DepthCrafterGUI instance via the root widget
+        gui_instance = getattr(root_window, 'app_instance', None) 
+        
+        if gui_instance:
+            bg_color = gui_instance.current_theme_colors["tooltip_bg"]
+            fg_color = gui_instance.current_theme_colors["tooltip_fg"]
+        else:
+            # Fallback colors if instance couldn't be found
+            bg_color = "#ffffe0"
+            fg_color = "black"
+
         self.tooltip_window = Toplevel(self.widget)
         self.tooltip_window.wm_overrideredirect(True) # Remove window decorations
         self.tooltip_window.wm_geometry(f"+{x}+{y}")
 
-        label = Label(self.tooltip_window, text=self.text, background="#ffffe0", relief="solid", borderwidth=1,
-                      font=("tahoma", "8", "normal"), justify="left", wraplength=250)
+        label = Label(self.tooltip_window, text=self.text, background="#ffffe0", relief="solid", borderwidth=1, justify="left", wraplength=250)
         label.pack(ipadx=1)
 
     def hide_tooltip(self, event=None):
@@ -106,6 +142,8 @@ class DepthCrafterGUI:
     def __init__(self, root):
         self.root = root
         self.root.title(f"DepthCrafter GUI Seg {GUI_VERSION}")
+        self.dark_mode_var = tk.BooleanVar(value=False)
+        self.current_theme_colors = LIGHT_MODE_COLORS # Initialize theme colors dictionary
         self.input_dir_or_file_var = tk.StringVar(value=os.path.normpath("./input_clips"))
         self.output_dir = tk.StringVar(value=os.path.normpath("./output_depthmaps"))
         self.guidance_scale = tk.DoubleVar(value=1.0)
@@ -189,6 +227,7 @@ class DepthCrafterGUI:
             "robust_norm_output_max": self.robust_norm_output_max,
             "robust_output_suffix": self.robust_output_suffix,
             "is_depth_far_black": self.is_depth_far_black,
+            "dark_mode_var": self.dark_mode_var,
         }
         self.initial_default_settings = self._collect_all_settings()
         self._help_data = None
@@ -206,7 +245,10 @@ class DepthCrafterGUI:
         self.processing_thread = None
         self.secondary_output_widgets_references = []
         self._load_help_content()
-        # --- ADD THIS INITIAL LOGGING SETUP ---
+        
+        self.style = ttk.Style(self.root)
+        self._apply_theme(is_startup=True)
+        
         # Set initial logging level based on the default value of debug_logging_enabled
         if self.debug_logging_enabled.get():
             logging.getLogger().setLevel(logging.DEBUG)
@@ -214,9 +256,12 @@ class DepthCrafterGUI:
             logging.getLogger().setLevel(logging.INFO)
         _logger.info(f"Initial logging level set to {'DEBUG' if self.debug_logging_enabled.get() else 'INFO'}.")
         # --------------------------------------
+
         self._create_menubar()
         self.create_widgets() 
-        # self.root.after(100, self.process_queue) # Removed GUI log update
+        self.root.app_instance = self 
+        # --------------------------------------
+        
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.toggle_merge_related_options_active_state()
         self.toggle_secondary_output_options_active_state()
@@ -224,8 +269,8 @@ class DepthCrafterGUI:
         _logger.info("DepthCrafter GUI initialized successfully.")
 
     def add_param(self, parent, label, var, row):
-        tk.Label(parent, text=label).grid(row=row, column=0, sticky="e", padx=5, pady=2)
-        entry = tk.Entry(parent, textvariable=var, width=20)
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="e", padx=5, pady=2)
+        entry = ttk.Entry(parent, textvariable=var, width=20)
         entry.grid(row=row, column=1, padx=5, pady=2, sticky="w")
         return entry
 
@@ -278,22 +323,22 @@ class DepthCrafterGUI:
         self.widgets_to_disable_during_processing = []
         
         # --- Input Source Frame ---
-        dir_frame = tk.LabelFrame(self.root, text="Input Source")
+        dir_frame = ttk.LabelFrame(self.root, text="Input Source")
         dir_frame.pack(fill="x", padx=10, pady=5, expand=False)        
         
-        tk.Label(dir_frame, text="Input Folder/File:").grid(row=0, column=0, sticky="e", padx=5, pady=2)
-        self.entry_input_dir_or_file = tk.Entry(dir_frame, textvariable=self.input_dir_or_file_var, width=50)
+        ttk.Label(dir_frame, text="Input Folder/File:").grid(row=0, column=0, sticky="e", padx=5, pady=2)
+        self.entry_input_dir_or_file = ttk.Entry(dir_frame, textvariable=self.input_dir_or_file_var, width=50)
         self.entry_input_dir_or_file.grid(row=0, column=1, padx=5, pady=2, sticky="ew")
         _create_hover_tooltip(self.entry_input_dir_or_file, "input_dir_or_file") # Tooltip for entry
         
-        browse_buttons_frame = tk.Frame(dir_frame)
+        browse_buttons_frame = ttk.Frame(dir_frame)
         browse_buttons_frame.grid(row=0, column=2, padx=5, pady=0, sticky="w")
         
-        self.browse_input_folder_btn = tk.Button(browse_buttons_frame, text="Browse Folder", command=self.browse_input_folder)
+        self.browse_input_folder_btn = ttk.Button(browse_buttons_frame, text="Browse Folder", command=self.browse_input_folder)
         self.browse_input_folder_btn.pack(side=tk.LEFT, padx=(0,2))
         _create_hover_tooltip(self.browse_input_folder_btn, "browse_input_folder") # Tooltip for button
         
-        self.browse_single_file_btn = tk.Button(browse_buttons_frame, text="Load Single File", command=self.browse_single_input_file)
+        self.browse_single_file_btn = ttk.Button(browse_buttons_frame, text="Load Single File", command=self.browse_single_input_file)
         self.browse_single_file_btn.pack(side=tk.LEFT, padx=(2,0))
         _create_hover_tooltip(self.browse_single_file_btn, "browse_single_file") # Tooltip for button
         
@@ -304,12 +349,12 @@ class DepthCrafterGUI:
             self.browse_single_file_btn
         ])
 
-        tk.Label(dir_frame, text="Output Folder:").grid(row=1, column=0, sticky="e", padx=5, pady=2)
-        self.entry_output_dir = tk.Entry(dir_frame, textvariable=self.output_dir, width=50)
+        ttk.Label(dir_frame, text="Output Folder:").grid(row=1, column=0, sticky="e", padx=5, pady=2)
+        self.entry_output_dir = ttk.Entry(dir_frame, textvariable=self.output_dir, width=50)
         self.entry_output_dir.grid(row=1, column=1, padx=5, pady=2)
         _create_hover_tooltip(self.entry_output_dir, "output_dir") # Tooltip for entry
         
-        self.browse_output_btn = tk.Button(dir_frame, text="Browse", command=self.browse_output)
+        self.browse_output_btn = ttk.Button(dir_frame, text="Browse", command=self.browse_output)
         self.browse_output_btn.grid(row=1, column=2, padx=5, pady=2)
         _create_hover_tooltip(self.browse_output_btn, "browse_output") # Tooltip for button
         
@@ -317,106 +362,106 @@ class DepthCrafterGUI:
 
         # --- Settings Container Frame (New) ---
         # This frame will hold the Main Params, Frame & Segment Control, Merged Output, and Secondary Output frames.
-        settings_container_frame = tk.Frame(self.root)
+        settings_container_frame = ttk.Frame(self.root)
         settings_container_frame.pack(fill="x", padx=10, pady=0, expand=False)
         settings_container_frame.columnconfigure(0, weight=1)
         settings_container_frame.columnconfigure(1, weight=1)
 
         # --- Main Parameters Frame ---
-        main_params_frame = tk.LabelFrame(settings_container_frame, text="Main Parameters")
+        main_params_frame = ttk.LabelFrame(settings_container_frame, text="Main Parameters")
         main_params_frame.grid(row=0, column=0, padx=(0,5), pady=5, sticky="nsew") # Placed in new container
         row_idx = 0
         
         # Guidance Scale
-        tk.Label(main_params_frame, text="Guidance Scale:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
-        entry_guidance_scale = tk.Entry(main_params_frame, textvariable=self.guidance_scale, width=18)
+        ttk.Label(main_params_frame, text="Guidance Scale:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        entry_guidance_scale = ttk.Entry(main_params_frame, textvariable=self.guidance_scale, width=18)
         entry_guidance_scale.grid(row=row_idx, column=1, padx=(5,0), pady=2, sticky="w")
         _create_hover_tooltip(entry_guidance_scale, "guidance_scale")
         self.widgets_to_disable_during_processing.append(entry_guidance_scale); row_idx += 1
         
         # Inference Steps
-        tk.Label(main_params_frame, text="Inference Steps:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
-        entry_inference_steps = tk.Entry(main_params_frame, textvariable=self.inference_steps, width=18)
+        ttk.Label(main_params_frame, text="Inference Steps:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        entry_inference_steps = ttk.Entry(main_params_frame, textvariable=self.inference_steps, width=18)
         entry_inference_steps.grid(row=row_idx, column=1, padx=(5,0), pady=2, sticky="w")
         _create_hover_tooltip(entry_inference_steps, "inference_steps")
         self.widgets_to_disable_during_processing.append(entry_inference_steps); row_idx += 1
 
         # Target Width
-        tk.Label(main_params_frame, text="Target Width:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
-        entry_target_width = tk.Entry(main_params_frame, textvariable=self.target_width, width=18)
+        ttk.Label(main_params_frame, text="Target Width:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        entry_target_width = ttk.Entry(main_params_frame, textvariable=self.target_width, width=18)
         entry_target_width.grid(row=row_idx, column=1, padx=(5,0), pady=2, sticky="w")
         _create_hover_tooltip(entry_target_width, "target_width")
         self.widgets_to_disable_during_processing.append(entry_target_width); row_idx += 1
 
         # Target Height
-        tk.Label(main_params_frame, text="Target Height:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
-        entry_target_height = tk.Entry(main_params_frame, textvariable=self.target_height, width=18)
+        ttk.Label(main_params_frame, text="Target Height:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        entry_target_height = ttk.Entry(main_params_frame, textvariable=self.target_height, width=18)
         entry_target_height.grid(row=row_idx, column=1, padx=(5,0), pady=2, sticky="w")
         _create_hover_tooltip(entry_target_height, "target_height")
         self.widgets_to_disable_during_processing.append(entry_target_height); row_idx += 1
 
         # Seed
-        tk.Label(main_params_frame, text="Seed:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
-        entry_seed = tk.Entry(main_params_frame, textvariable=self.seed, width=18)
+        ttk.Label(main_params_frame, text="Seed:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        entry_seed = ttk.Entry(main_params_frame, textvariable=self.seed, width=18)
         entry_seed.grid(row=row_idx, column=1, padx=(5,0), pady=2, sticky="w")
         _create_hover_tooltip(entry_seed, "seed")
         self.widgets_to_disable_during_processing.append(entry_seed); row_idx += 1
         
         # CPU Offload Mode
-        tk.Label(main_params_frame, text="CPU Offload Mode:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        ttk.Label(main_params_frame, text="CPU Offload Mode:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
         self.combo_cpu_offload = ttk.Combobox(main_params_frame, textvariable=self.cpu_offload, values=["model", "sequential", ""], width=17, state="readonly")
         self.combo_cpu_offload.grid(row=row_idx, column=1, padx=5, pady=2, sticky="w")
         _create_hover_tooltip(self.combo_cpu_offload, "cpu_offload")
         self.widgets_to_disable_during_processing.append(self.combo_cpu_offload); row_idx += 1
 
         # --- Frame & Segment Control Frame ---
-        fs_frame = tk.LabelFrame(settings_container_frame, text="Frame & Segment Control")
+        fs_frame = ttk.LabelFrame(settings_container_frame, text="Frame & Segment Control")
         fs_frame.grid(row=0, column=1, padx=(5,0), pady=5, sticky="nsew") # Placed in new container
 
         row_idx = 0 
         
         # Window Size
-        tk.Label(fs_frame, text="Window Size:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
-        entry_window_size = tk.Entry(fs_frame, textvariable=self.window_size, width=18)
+        ttk.Label(fs_frame, text="Window Size:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        entry_window_size = ttk.Entry(fs_frame, textvariable=self.window_size, width=18)
         entry_window_size.grid(row=row_idx, column=1, padx=(5,0), pady=2, sticky="w")
         _create_hover_tooltip(entry_window_size, "window_size")
         self.widgets_to_disable_during_processing.append(entry_window_size); row_idx += 1
         
         # Overlap
-        tk.Label(fs_frame, text="Overlap:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
-        entry_overlap = tk.Entry(fs_frame, textvariable=self.overlap, width=18)
+        ttk.Label(fs_frame, text="Overlap:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        entry_overlap = ttk.Entry(fs_frame, textvariable=self.overlap, width=18)
         entry_overlap.grid(row=row_idx, column=1, padx=(5,0), pady=2, sticky="w")
         _create_hover_tooltip(entry_overlap, "overlap")
         self.widgets_to_disable_during_processing.append(entry_overlap); row_idx += 1
         
         # Target FPS
-        tk.Label(fs_frame, text="Target FPS (-1 Original):").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
-        entry_target_fps = tk.Entry(fs_frame, textvariable=self.target_fps, width=18)
+        ttk.Label(fs_frame, text="Target FPS (-1 Original):").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        entry_target_fps = ttk.Entry(fs_frame, textvariable=self.target_fps, width=18)
         entry_target_fps.grid(row=row_idx, column=1, padx=(5,0), pady=2, sticky="w")
         _create_hover_tooltip(entry_target_fps, "target_fps")
         self.widgets_to_disable_during_processing.append(entry_target_fps); row_idx += 1
         
         # Process Max Frames
-        tk.Label(fs_frame, text="Process Max Frames (-1 All):").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
-        entry_process_length = tk.Entry(fs_frame, textvariable=self.process_length, width=18)
+        ttk.Label(fs_frame, text="Process Max Frames (-1 All):").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        entry_process_length = ttk.Entry(fs_frame, textvariable=self.process_length, width=18)
         entry_process_length.grid(row=row_idx, column=1, padx=(5,0), pady=2, sticky="w")
         _create_hover_tooltip(entry_process_length, "process_length")
         self.widgets_to_disable_during_processing.append(entry_process_length); row_idx += 1
         
         # Save Sidecar JSON for Final Output
-        self.save_final_json_cb = tk.Checkbutton(fs_frame, text="Save Sidecar JSON for Final Output", variable=self.save_final_output_json_var)
+        self.save_final_json_cb = ttk.Checkbutton(fs_frame, text="Save Sidecar JSON for Final Output", variable=self.save_final_output_json_var)
         self.save_final_json_cb.grid(row=row_idx, column=0, columnspan=2, sticky="w", padx=5, pady=2)
         _create_hover_tooltip(self.save_final_json_cb, "save_final_json")
         self.widgets_to_disable_during_processing.append(self.save_final_json_cb); row_idx +=1
 
         # Process as Segments
-        self.process_as_segments_cb = tk.Checkbutton(fs_frame, text="Process as Segments (Low VRAM Mode)", variable=self.process_as_segments_var, command=self.toggle_merge_related_options_active_state)
+        self.process_as_segments_cb = ttk.Checkbutton(fs_frame, text="Process as Segments (Low VRAM Mode)", variable=self.process_as_segments_var, command=self.toggle_merge_related_options_active_state)
         self.process_as_segments_cb.grid(row=row_idx, column=0, columnspan=2, sticky="w", padx=5, pady=2)
         _create_hover_tooltip(self.process_as_segments_cb, "process_as_segments")
         self.widgets_to_disable_during_processing.append(self.process_as_segments_cb); row_idx += 1
 
         # --- Merged Output Options Frame ---
-        merge_opts_frame = tk.LabelFrame(settings_container_frame, text="Merged Output Options (if segments processed)")
+        merge_opts_frame = ttk.LabelFrame(settings_container_frame, text="Merged Output Options (if segments processed)")
         merge_opts_frame.grid(row=1, column=0, padx=(0,5), pady=5, sticky="nsew") # Placed in new container
         merge_opts_frame.columnconfigure(0, minsize=120) # Ensure column 0 for labels is wide enough
         self.merge_related_widgets_references = []
@@ -424,23 +469,23 @@ class DepthCrafterGUI:
         row_idx = 0
 
         # Keep intermediate NPZ files
-        self.keep_npz_cb = tk.Checkbutton(merge_opts_frame, text="Keep intermediate NPZ", variable=self.keep_intermediate_npz_var, command=self.toggle_keep_npz_dependent_options_state)
+        self.keep_npz_cb = ttk.Checkbutton(merge_opts_frame, text="Keep intermediate NPZ", variable=self.keep_intermediate_npz_var, command=self.toggle_keep_npz_dependent_options_state)
         self.keep_npz_cb.grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
         _create_hover_tooltip(self.keep_npz_cb, "keep_npz")
         self.merge_related_widgets_references.append(self.keep_npz_cb)
         self.widgets_to_disable_during_processing.append(self.keep_npz_cb); row_idx += 1
 
         # Min Orig. Vid Frames to Keep NPZ
-        self.lbl_min_frames_npz = tk.Label(merge_opts_frame, text="  ↳ Min thesh. to Keep NPZ:")
+        self.lbl_min_frames_npz = ttk.Label(merge_opts_frame, text="  ↳ Min thesh. to Keep NPZ:")
         self.lbl_min_frames_npz.grid(row=row_idx, column=0, sticky="e", padx=(20,2), pady=2)
-        self.entry_min_frames_npz = tk.Entry(merge_opts_frame, textvariable=self.min_frames_to_keep_npz_var, width=7)
+        self.entry_min_frames_npz = ttk.Entry(merge_opts_frame, textvariable=self.min_frames_to_keep_npz_var, width=7)
         self.entry_min_frames_npz.grid(row=row_idx, column=1, padx=(0,2), pady=2, sticky="w")
         _create_hover_tooltip(self.entry_min_frames_npz, "min_frames_npz")
         self.keep_npz_dependent_widgets.extend([self.lbl_min_frames_npz, self.entry_min_frames_npz])
         self.widgets_to_disable_during_processing.extend([self.lbl_min_frames_npz, self.entry_min_frames_npz]); row_idx += 1
 
         # Segment Visual Format
-        self.lbl_intermediate_fmt = tk.Label(merge_opts_frame, text="  ↳ Segment Format:")
+        self.lbl_intermediate_fmt = ttk.Label(merge_opts_frame, text="  ↳ Segment Format:")
         self.lbl_intermediate_fmt.grid(row=row_idx, column=0, sticky="e", padx=(20,2), pady=2)
         combo_intermediate_fmt_values = ["png_sequence", "mp4", "main10_mp4", "none"]
         if OPENEXR_AVAILABLE_GUI: combo_intermediate_fmt_values.extend(["exr_sequence", "exr"])
@@ -452,15 +497,15 @@ class DepthCrafterGUI:
         self.toggle_keep_npz_dependent_options_state()
 
         # Dithering (MP4)
-        self.merge_dither_cb = tk.Checkbutton(merge_opts_frame, text="Dithering", variable=self.merge_dither_var, command=self.toggle_dither_options_active_state)
+        self.merge_dither_cb = ttk.Checkbutton(merge_opts_frame, text="Dithering", variable=self.merge_dither_var, command=self.toggle_dither_options_active_state)
         self.merge_dither_cb.grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
         _create_hover_tooltip(self.merge_dither_cb, "merge_dither") # Tooltip on checkbox
         
-        dither_details_frame = tk.Frame(merge_opts_frame)
+        dither_details_frame = ttk.Frame(merge_opts_frame)
         dither_details_frame.grid(row=row_idx, column=1, sticky="w", padx=(0,0))
-        self.lbl_dither_str = tk.Label(dither_details_frame, text="Strength:")
+        self.lbl_dither_str = ttk.Label(dither_details_frame, text="Strength:")
         self.lbl_dither_str.pack(side=tk.LEFT, padx=(0, 2))
-        self.entry_dither_str = tk.Entry(dither_details_frame, textvariable=self.merge_dither_strength_var, width=7)
+        self.entry_dither_str = ttk.Entry(dither_details_frame, textvariable=self.merge_dither_strength_var, width=7)
         self.entry_dither_str.pack(side=tk.LEFT, padx=(0, 0))
         _create_hover_tooltip(self.entry_dither_str, "merge_dither_strength") # Tooltip on entry
         
@@ -469,15 +514,15 @@ class DepthCrafterGUI:
         self.toggle_dither_options_active_state() # Call after creation
 
         # Gamma Correct (MP4)
-        self.merge_gamma_cb = tk.Checkbutton(merge_opts_frame, text="Gamma Adjust", variable=self.merge_gamma_correct_var, command=self.toggle_gamma_options_active_state)
+        self.merge_gamma_cb = ttk.Checkbutton(merge_opts_frame, text="Gamma Adjust", variable=self.merge_gamma_correct_var, command=self.toggle_gamma_options_active_state)
         self.merge_gamma_cb.grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
         _create_hover_tooltip(self.merge_gamma_cb, "merge_gamma") # Tooltip on checkbox
         
-        gamma_details_frame = tk.Frame(merge_opts_frame)
+        gamma_details_frame = ttk.Frame(merge_opts_frame)
         gamma_details_frame.grid(row=row_idx, column=1, sticky="w", padx=(0,0))
-        self.lbl_gamma_val = tk.Label(gamma_details_frame, text="Value:")
+        self.lbl_gamma_val = ttk.Label(gamma_details_frame, text="Value:")
         self.lbl_gamma_val.pack(side=tk.LEFT, padx=(0, 2))
-        self.entry_gamma_val = tk.Entry(gamma_details_frame, textvariable=self.merge_gamma_value_var, width=7)
+        self.entry_gamma_val = ttk.Entry(gamma_details_frame, textvariable=self.merge_gamma_value_var, width=7)
         self.entry_gamma_val.pack(side=tk.LEFT, padx=(0, 0))
         _create_hover_tooltip(self.entry_gamma_val, "merge_gamma_value") # Tooltip on entry
         
@@ -486,21 +531,21 @@ class DepthCrafterGUI:
         self.toggle_gamma_options_active_state() # Call after creation
 
         # Percentile Normalization
-        self.merge_perc_norm_cb = tk.Checkbutton(merge_opts_frame, text="Normalization", variable=self.merge_percentile_norm_var, command=self.toggle_percentile_norm_options_active_state)
+        self.merge_perc_norm_cb = ttk.Checkbutton(merge_opts_frame, text="Normalization", variable=self.merge_percentile_norm_var, command=self.toggle_percentile_norm_options_active_state)
         self.merge_perc_norm_cb.grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
         _create_hover_tooltip(self.merge_perc_norm_cb, "merge_percentile_norm") # Tooltip on checkbox
         
-        low_high_frame = tk.Frame(merge_opts_frame)
+        low_high_frame = ttk.Frame(merge_opts_frame)
         low_high_frame.grid(row=row_idx, column=1, sticky="w", padx=(0,0))
-        self.lbl_low_perc = tk.Label(low_high_frame, text="Low:")
+        self.lbl_low_perc = ttk.Label(low_high_frame, text="Low:")
         self.lbl_low_perc.pack(side=tk.LEFT, padx=(0,2))
-        self.entry_low_perc = tk.Entry(low_high_frame, textvariable=self.merge_norm_low_perc_var, width=7)
+        self.entry_low_perc = ttk.Entry(low_high_frame, textvariable=self.merge_norm_low_perc_var, width=7)
         self.entry_low_perc.pack(side=tk.LEFT, padx=(0,10))
-        self.lbl_high_perc = tk.Label(low_high_frame, text="High:")
+        self.lbl_high_perc = ttk.Label(low_high_frame, text="High:")
         self.lbl_high_perc.pack(side=tk.LEFT, padx=(0,2))
-        self.entry_high_perc = tk.Entry(low_high_frame, textvariable=self.merge_norm_high_perc_var, width=7)
+        self.entry_high_perc = ttk.Entry(low_high_frame, textvariable=self.merge_norm_high_perc_var, width=7)
         self.entry_high_perc.pack(side=tk.LEFT, padx=(0,0))
-        tk.Label(merge_opts_frame, text="  ↳").grid(row=row_idx, column=0, sticky="e", padx=(10,2)) # Aligns with the checkbox
+        ttk.Label(merge_opts_frame, text="  ↳").grid(row=row_idx, column=0, sticky="e", padx=(10,2)) # Aligns with the checkbox
         _create_hover_tooltip(self.entry_low_perc, "merge_norm_low_perc") # Tooltip on entry
         _create_hover_tooltip(self.entry_high_perc, "merge_norm_high_perc") # Tooltip on entry
         
@@ -509,7 +554,7 @@ class DepthCrafterGUI:
         self.toggle_percentile_norm_options_active_state()
 
         # Alignment Method
-        lbl_merge_alignment = tk.Label(merge_opts_frame, text="Alignment Method:")
+        lbl_merge_alignment = ttk.Label(merge_opts_frame, text="Alignment Method:")
         lbl_merge_alignment.grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
         self.combo_merge_alignment = ttk.Combobox(merge_opts_frame, textvariable=self.merge_alignment_method_var, values=["Shift & Scale", "Linear Blend"], width=17, state="readonly")
         self.combo_merge_alignment.grid(row=row_idx, column=1, padx=(0,2), pady=2, sticky="w")
@@ -518,7 +563,7 @@ class DepthCrafterGUI:
         self.widgets_to_disable_during_processing.extend([lbl_merge_alignment, self.combo_merge_alignment]); row_idx += 1
         
         # Output Format
-        lbl_merge_fmt = tk.Label(merge_opts_frame, text="Output Format:")
+        lbl_merge_fmt = ttk.Label(merge_opts_frame, text="Output Format:")
         lbl_merge_fmt.grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
         merge_fmt_values = ["mp4", "main10_mp4", "png_sequence"] + (["exr_sequence", "exr"] if OPENEXR_AVAILABLE_GUI else [])
         self.combo_merge_fmt = ttk.Combobox(merge_opts_frame, textvariable=self.merge_output_format_var, values=merge_fmt_values, width=17, state="readonly")
@@ -528,40 +573,40 @@ class DepthCrafterGUI:
         self.widgets_to_disable_during_processing.extend([lbl_merge_fmt, self.combo_merge_fmt]); row_idx += 1
 
         # Output Suffix
-        lbl_merge_suffix = tk.Label(merge_opts_frame, text="Output Suffix:")
+        lbl_merge_suffix = ttk.Label(merge_opts_frame, text="Output Suffix:")
         lbl_merge_suffix.grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
-        self.entry_merge_suffix = tk.Entry(merge_opts_frame, textvariable=self.merge_output_suffix_var, width=18)
+        self.entry_merge_suffix = ttk.Entry(merge_opts_frame, textvariable=self.merge_output_suffix_var, width=18)
         self.entry_merge_suffix.grid(row=row_idx, column=1, padx=(0,2), pady=2, sticky="w")
         _create_hover_tooltip(self.entry_merge_suffix, "merge_output_suffix")
         self.merge_related_widgets_references.append((lbl_merge_suffix, self.entry_merge_suffix))
         self.widgets_to_disable_during_processing.extend([lbl_merge_suffix, self.entry_merge_suffix]); row_idx += 1
 
         # --- NEW: Secondary Output Frame ---
-        secondary_output_frame = tk.LabelFrame(settings_container_frame, text="Secondary Output")
+        secondary_output_frame = ttk.LabelFrame(settings_container_frame, text="Secondary Output")
         secondary_output_frame.grid(row=1, column=1, padx=(5,0), pady=5, sticky="nsew") # Placed in new container
         secondary_output_frame.columnconfigure(0, minsize=140) # Adjust as needed
         
         row_idx = 0
         # Enable Secondary Output Checkbox
-        self.enable_secondary_output_cb = tk.Checkbutton(secondary_output_frame, text="Enable Secondary Output", variable=self.enable_dual_output_robust_norm, command=self.toggle_secondary_output_options_active_state)
+        self.enable_secondary_output_cb = ttk.Checkbutton(secondary_output_frame, text="Enable Secondary Output", variable=self.enable_dual_output_robust_norm, command=self.toggle_secondary_output_options_active_state)
         self.enable_secondary_output_cb.grid(row=row_idx, column=0, columnspan=2, sticky="w", padx=5, pady=2)
         _create_hover_tooltip(self.enable_secondary_output_cb, "enable_secondary_output") # Add help_content.json entry
         self.widgets_to_disable_during_processing.append(self.enable_secondary_output_cb); row_idx += 1
         
         # Depth Range (0-1) Low / High
-        tk.Label(secondary_output_frame, text="Depth Output Range (0-1):").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
-        depth_range_frame = tk.Frame(secondary_output_frame)
+        ttk.Label(secondary_output_frame, text="Depth Output Range (0-1):").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        depth_range_frame = ttk.Frame(secondary_output_frame)
         depth_range_frame.grid(row=row_idx, column=1, sticky="w", padx=0, pady=0)
         
-        lbl_out_min = tk.Label(depth_range_frame, text="Low:")
+        lbl_out_min = ttk.Label(depth_range_frame, text="Low:")
         lbl_out_min.pack(side=tk.LEFT, padx=(0,2))
-        entry_out_min = tk.Entry(depth_range_frame, textvariable=self.robust_norm_output_min, width=7)
+        entry_out_min = ttk.Entry(depth_range_frame, textvariable=self.robust_norm_output_min, width=7)
         entry_out_min.pack(side=tk.LEFT, padx=(0,10))
         _create_hover_tooltip(entry_out_min, "robust_norm_output_min") # Add help_content.json entry
         
-        lbl_out_max = tk.Label(depth_range_frame, text="High:")
+        lbl_out_max = ttk.Label(depth_range_frame, text="High:")
         lbl_out_max.pack(side=tk.LEFT, padx=(0,2))
-        entry_out_max = tk.Entry(depth_range_frame, textvariable=self.robust_norm_output_max, width=7)
+        entry_out_max = ttk.Entry(depth_range_frame, textvariable=self.robust_norm_output_max, width=7)
         entry_out_max.pack(side=tk.LEFT, padx=(0,0))
         _create_hover_tooltip(entry_out_max, "robust_norm_output_max") # Add help_content.json entry
         
@@ -569,19 +614,19 @@ class DepthCrafterGUI:
         self.widgets_to_disable_during_processing.extend([lbl_out_min, entry_out_min, lbl_out_max, entry_out_max]); row_idx += 1
 
         # Normalize % Low / High
-        tk.Label(secondary_output_frame, text="Clipped Output % Range:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
-        norm_perc_frame = tk.Frame(secondary_output_frame)
+        ttk.Label(secondary_output_frame, text="Clipped Output % Range:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        norm_perc_frame = ttk.Frame(secondary_output_frame)
         norm_perc_frame.grid(row=row_idx, column=1, sticky="w", padx=0, pady=0)
         
-        lbl_norm_low = tk.Label(norm_perc_frame, text="Low:")
+        lbl_norm_low = ttk.Label(norm_perc_frame, text="Low:")
         lbl_norm_low.pack(side=tk.LEFT, padx=(0,2))
-        entry_norm_low = tk.Entry(norm_perc_frame, textvariable=self.robust_norm_low_percentile, width=7)
+        entry_norm_low = ttk.Entry(norm_perc_frame, textvariable=self.robust_norm_low_percentile, width=7)
         entry_norm_low.pack(side=tk.LEFT, padx=(0,10))
         _create_hover_tooltip(entry_norm_low, "robust_norm_low_percentile") # Add help_content.json entry
         
-        lbl_norm_high = tk.Label(norm_perc_frame, text="High:")
+        lbl_norm_high = ttk.Label(norm_perc_frame, text="High:")
         lbl_norm_high.pack(side=tk.LEFT, padx=(0,2))
-        entry_norm_high = tk.Entry(norm_perc_frame, textvariable=self.robust_norm_high_percentile, width=7)
+        entry_norm_high = ttk.Entry(norm_perc_frame, textvariable=self.robust_norm_high_percentile, width=7)
         entry_norm_high.pack(side=tk.LEFT, padx=(0,0))
         _create_hover_tooltip(entry_norm_high, "robust_norm_high_percentile") # Add help_content.json entry
         
@@ -589,35 +634,36 @@ class DepthCrafterGUI:
         self.widgets_to_disable_during_processing.extend([lbl_norm_low, entry_norm_low, lbl_norm_high, entry_norm_high]); row_idx += 1
 
         # Output Suffix
-        lbl_robust_suffix = tk.Label(secondary_output_frame, text="Output Suffix:")
+        lbl_robust_suffix = ttk.Label(secondary_output_frame, text="Output Suffix:")
         lbl_robust_suffix.grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
-        entry_robust_suffix = tk.Entry(secondary_output_frame, textvariable=self.robust_output_suffix, width=18)
+        entry_robust_suffix = ttk.Entry(secondary_output_frame, textvariable=self.robust_output_suffix, width=18)
         entry_robust_suffix.grid(row=row_idx, column=1, padx=(0,2), pady=2, sticky="w")
         _create_hover_tooltip(entry_robust_suffix, "robust_output_suffix") # Add help_content.json entry
         self.secondary_output_widgets_references.extend([lbl_robust_suffix, entry_robust_suffix])
         self.widgets_to_disable_during_processing.extend([lbl_robust_suffix, entry_robust_suffix]); row_idx += 1
 
         # --- Progress Bar and Status ---
-        progress_bar_frame = tk.Frame(self.root)
+        progress_bar_frame = ttk.Frame(self.root)
         progress_bar_frame.pack(pady=(10, 0), padx=10, fill="x", expand=False)
         
         self.progress = ttk.Progressbar(progress_bar_frame, orient="horizontal", length=300, mode="determinate")
         self.progress.pack(fill=tk.X, expand=True, padx=0, pady=0)
 
         # Status Label (NEW)
-        self.status_label = tk.Label(progress_bar_frame, textvariable=self.status_message_var, bd=1, relief=tk.SUNKEN, anchor=tk.CENTER)
-        self.status_label.pack(fill=tk.X, padx=0, pady=2)
+        self.style.configure("Status.TLabel", anchor="center") 
+        self.status_label = ttk.Label(progress_bar_frame, text="Ready")
+        self.status_label.pack(padx=0, pady=2)
 
         # --- Control Buttons ---
-        ctrl_frame = tk.Frame(self.root)
+        ctrl_frame = ttk.Frame(self.root)
         ctrl_frame.pack(pady=(5, 10), padx=10, fill="x", expand=False)
 
         # --- Container frame for buttons to center them ---
-        button_container_frame = tk.Frame(ctrl_frame)
+        button_container_frame = ttk.Frame(ctrl_frame)
         button_container_frame.pack(anchor="center") # Centers the button_container_frame within ctrl_frame
 
         # --- Current Processing Information Frame ---
-        processing_info_frame = tk.LabelFrame(self.root, text="Current Processing Information")
+        processing_info_frame = ttk.LabelFrame(self.root, text="Current Processing Information")
         processing_info_frame.pack(fill="x", padx=10, pady=5, expand=False)
         
         # Grid layout for labels inside this frame
@@ -626,43 +672,43 @@ class DepthCrafterGUI:
 
         row_idx = 0
         # Filename
-        tk.Label(processing_info_frame, text="Filename:").grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
-        lbl_filename = tk.Label(processing_info_frame, textvariable=self.current_filename_var, anchor=tk.W)
+        ttk.Label(processing_info_frame, text="Filename:").grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
+        lbl_filename = ttk.Label(processing_info_frame, textvariable=self.current_filename_var, anchor=tk.W)
         lbl_filename.grid(row=row_idx, column=1, sticky="ew", padx=5, pady=2)
         _create_hover_tooltip(lbl_filename, "current_filename") # Add tooltip
         row_idx += 1
 
         # Resolution
-        tk.Label(processing_info_frame, text="Resolution:").grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
-        lbl_resolution = tk.Label(processing_info_frame, textvariable=self.current_resolution_var, anchor=tk.W)
+        ttk.Label(processing_info_frame, text="Resolution:").grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
+        lbl_resolution = ttk.Label(processing_info_frame, textvariable=self.current_resolution_var, anchor=tk.W)
         lbl_resolution.grid(row=row_idx, column=1, sticky="ew", padx=5, pady=2)
         _create_hover_tooltip(lbl_resolution, "current_resolution") # Add tooltip
         row_idx += 1
 
         # Frames
-        tk.Label(processing_info_frame, text="Frames:").grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
-        lbl_frames = tk.Label(processing_info_frame, textvariable=self.current_frames_var, anchor=tk.W)
+        ttk.Label(processing_info_frame, text="Frames:").grid(row=row_idx, column=0, sticky="w", padx=5, pady=2)
+        lbl_frames = ttk.Label(processing_info_frame, textvariable=self.current_frames_var, anchor=tk.W)
         lbl_frames.grid(row=row_idx, column=1, sticky="ew", padx=5, pady=2)
         _create_hover_tooltip(lbl_frames, "current_frames") # Add tooltip
         row_idx += 1
 
-        start_frame = tk.Frame(button_container_frame); start_frame.pack(side=tk.LEFT, padx=(0,2))
-        self.start_button = tk.Button(start_frame, text="Start", command=self.start_thread, width=10)
+        start_frame = ttk.Frame(button_container_frame); start_frame.pack(side=tk.LEFT, padx=(0,2))
+        self.start_button = ttk.Button(start_frame, text="Start", command=self.start_thread, width=10)
         self.start_button.pack(side=tk.LEFT)
         _create_hover_tooltip(self.start_button, "start_button")        
 
-        cancel_frame = tk.Frame(button_container_frame); cancel_frame.pack(side=tk.LEFT, padx=(2,2))
-        self.cancel_button = tk.Button(cancel_frame, text="Cancel", command=self.stop_processing, width=10, state=tk.DISABLED)
+        cancel_frame = ttk.Frame(button_container_frame); cancel_frame.pack(side=tk.LEFT, padx=(2,2))
+        self.cancel_button = ttk.Button(cancel_frame, text="Cancel", command=self.stop_processing, width=10, state=tk.DISABLED)
         self.cancel_button.pack(side=tk.LEFT)
         _create_hover_tooltip(self.cancel_button, "cancel_button")
 
-        remerge_frame = tk.Frame(button_container_frame); remerge_frame.pack(side=tk.LEFT, padx=(2,2))
-        self.remerge_button = tk.Button(remerge_frame, text="Re-Merge Segments", command=self.re_merge_from_gui, width=18)
+        remerge_frame = ttk.Frame(button_container_frame); remerge_frame.pack(side=tk.LEFT, padx=(2,2))
+        self.remerge_button = ttk.Button(remerge_frame, text="Re-Merge Segments", command=self.re_merge_from_gui, width=18)
         self.remerge_button.pack(side=tk.LEFT)
         _create_hover_tooltip(self.remerge_button, "remerge_button")
 
-        genvis_frame = tk.Frame(button_container_frame); genvis_frame.pack(side=tk.LEFT, padx=(2,2))
-        self.generate_visuals_button = tk.Button(genvis_frame, text="Generate Seg Visuals", command=self.generate_segment_visuals_from_gui, width=20)
+        genvis_frame = ttk.Frame(button_container_frame); genvis_frame.pack(side=tk.LEFT, padx=(2,2))
+        self.generate_visuals_button = ttk.Button(genvis_frame, text="Generate Seg Visuals", command=self.generate_segment_visuals_from_gui, width=20)
         self.generate_visuals_button.pack(side=tk.LEFT)
         _create_hover_tooltip(self.generate_visuals_button, "generate_visuals_button")
 
@@ -1343,6 +1389,63 @@ class DepthCrafterGUI:
             self.toggle_merge_related_options_active_state()
         # Removed update GUI verbosity
 
+    def _apply_theme(self, is_startup: bool = False):
+        """Applies the selected theme (dark or light) to the GUI."""
+        
+        if not THEMEDTK_AVAILABLE:
+            # ...
+            return
+        
+        # --- Core Theme Application (Must happen before detailed styling) ---
+        if self.dark_mode_var.get():
+            colors = DARK_MODE_COLORS
+            theme_name = colors["theme_name"]
+        else:
+            colors = LIGHT_MODE_COLORS
+            theme_name = colors["theme_name"]
+
+        self.current_theme_colors = colors
+        
+        if THEMEDTK_AVAILABLE:
+             # Apply the theme first
+             self.root.set_theme(theme_name) 
+
+        # --- Detailed TEntry/TCombobox Styling (Apply to CURRENT Theme) ---
+        # NOTE: We use style.map() for backgrounds to override theme defaults
+        entry_bg = colors["entry_bg"]
+        entry_fg = colors["fg"]
+        
+        # 1. TEntry Styling
+        self.style.configure("TEntry", foreground=entry_fg, insertcolor=entry_fg)
+        # Use map to force the fieldbackground for the default state (empty tuple)
+        self.style.map('TEntry', 
+                       fieldbackground=[('', entry_bg)], # '' is the default state
+                       foreground=[('', entry_fg)])
+        
+        # 2. TCombobox Styling
+        self.style.configure("TCombobox", foreground=entry_fg) 
+        self.style.map('TCombobox', 
+                       fieldbackground=[('readonly', entry_bg)], 
+                       foreground=[('readonly', entry_fg)])
+
+
+        # --- Manual Coloring for raw TK Menu ---
+        root_bg_color = colors["bg"]
+        root_fg_color = colors["fg"]
+        menu_active_bg = "#555555" if self.dark_mode_var.get() else "#dddddd"
+        menu_active_fg = "white" if self.dark_mode_var.get() else "black"
+
+        self.root.config(bg=root_bg_color)
+        
+        # NOTE: Since the widgets are now ttk, this is mainly for the root frame and menu
+        if hasattr(self, 'menubar'): 
+            # Menubar and Menus are raw tk.Menu and need manual color
+            self.menubar.config(bg=root_bg_color, fg=root_fg_color, activebackground=menu_active_bg, activeforeground=menu_active_fg)
+            if hasattr(self, 'file_menu'): self.file_menu.config(bg=root_bg_color, fg=root_fg_color)
+            if hasattr(self, 'help_menu'): self.help_menu.config(bg=root_bg_color, fg=root_fg_color)
+           
+        self.root.update_idletasks()
+    
     def _cleanup_segment_folder(self, segment_subfolder_path, original_basename, master_meta):
         del_folder = False
         if not self.keep_intermediate_npz_var.get():
@@ -1384,11 +1487,11 @@ class DepthCrafterGUI:
         return settings_data
 
     def _create_menubar(self):
-        menubar = tk.Menu(self.root)
-        self.root.config(menu=menubar)
+        self.menubar = tk.Menu(self.root)
+        self.root.config(menu=self.menubar)
 
-        self.file_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="File", menu=self.file_menu)
+        self.file_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="File", menu=self.file_menu)
         self.file_menu.add_command(label="Load Settings...", command=self._load_all_settings)
         self.file_menu.add_command(label="Save Settings As...", command=self._save_all_settings_as)
         self.file_menu.add_command(label="Reset Settings to Default", command=self._reset_settings_to_defaults)
@@ -1397,11 +1500,13 @@ class DepthCrafterGUI:
         self.file_menu.add_command(label="Restore Failed Input Files...", command=lambda: self._restore_input_files(folder_type="failed"))
         self.file_menu.add_separator()
         self.file_menu.add_checkbutton(label="Use Local Models Only", variable=self.use_local_models_only_var, onvalue=True, offvalue=False)
+        if THEMEDTK_AVAILABLE:
+            self.file_menu.add_checkbutton(label="Dark Mode", variable=self.dark_mode_var, command=self._apply_theme)
         self.file_menu.add_separator()
         self.file_menu.add_command(label="Exit", command=self.on_close)
 
-        self.help_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Help", menu=self.help_menu)
+        self.help_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="Help", menu=self.help_menu)
         self.help_menu.add_command(label="GUI Overview", command=lambda: self._show_help_for("general_gui_overview"))
         # --- ADD THIS CHECKBUTTON TO HELP MENU ---
         self.help_menu.add_separator() # Optional separator for clarity
@@ -2011,6 +2116,33 @@ class DepthCrafterGUI:
             self.status_message_var.set(f"Error: {e.__class__.__name__} during {original_basename}")
         return job_successful, returned_job_specific_metadata
 
+    def _recolor_tk_widgets(self, parent, bg_color, fg_color, entry_bg):
+        """Recursively recolors raw tk widgets within a parent container."""
+        for widget in parent.winfo_children():
+            widget_type = widget.winfo_class()
+            try:
+                # Basic widgets that support bg/fg config
+                if widget_type in ('Label', 'Checkbutton'):
+                    widget.config(bg=bg_color, fg=fg_color)
+                elif widget_type == 'Entry':
+                    widget.config(bg=entry_bg, fg=fg_color, insertbackground=fg_color)
+                # Buttons usually look better controlled by the theme/style
+                # elif widget_type == 'Button':
+                #     widget.config(bg=bg_color, fg=fg_color) 
+                # Containers
+                elif widget_type in ('Frame', 'Toplevel', 'Menubutton'):
+                    widget.config(bg=bg_color)
+                # LabelFrame title
+                elif widget_type == 'Labelframe':
+                    widget.config(bg=bg_color, fg=fg_color)
+            except tk.TclError:
+                # Some widgets (like a tk.Text in a Log window, if you had one)
+                # or ttk widgets passed to this function will raise an error. Ignore.
+                pass 
+            
+            # Recurse into children
+            self._recolor_tk_widgets(widget, bg_color, fg_color, entry_bg)
+
     def _reset_settings_to_defaults(self):
         if messagebox.askyesno("Reset Settings", "Are you sure you want to reset all settings to their default values?"):
             self._apply_all_settings(self.initial_default_settings)
@@ -2262,7 +2394,7 @@ class DepthCrafterGUI:
         
         button_frame = ttk.Frame(help_window, padding=(0, 5, 0, 10))
         button_frame.pack(fill=tk.X)
-        ok_button = ttk.Button(button_frame, text="OK", command=help_window.destroy, width=10)
+        ok_button = tttk.Button(button_frame, text="OK", command=help_window.destroy, width=10)
         ok_button.pack()
         
         self.root.update_idletasks()
@@ -2294,6 +2426,10 @@ if __name__ == "__main__":
                         format='%(asctime)s - %(message)s',
                         datefmt='%H:%M:%S')
 
-    root = tk.Tk()
+    
+    if THEMEDTK_AVAILABLE:
+        root = ThemedTk(theme="default") # Use ThemedTk for theme support
+    else:
+        root = tk.Tk()
     app = DepthCrafterGUI(root)
     root.mainloop()
