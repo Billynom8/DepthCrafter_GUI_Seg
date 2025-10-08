@@ -270,6 +270,1057 @@ class DepthCrafterGUI:
                 
         _logger.info("DepthCrafter GUI initialized successfully.")
 
+    def _apply_all_settings(self, settings_data: dict):
+        for key, value_from_json in settings_data.items():
+            if key == "target_fps": # Specific debug
+                _logger.debug(f"_apply_all_settings: Loading target_fps from JSON. Value: {value_from_json}, Type: {type(value_from_json)}")
+            if key in self.all_tk_vars:
+                try:
+                    self.all_tk_vars[key].set(value_from_json)
+                    # After setting, get it back to see what DoubleVar stored
+                    if key == "target_fps":
+                        val_in_doublevar = self.all_tk_vars[key].get()
+                        _logger.debug(f"_apply_all_settings: target_fps in DoubleVar after set: {val_in_doublevar}, Type: {type(val_in_doublevar)}")
+                except tk.TclError:
+                     _logger.warning(f"Warning: Could not set value for setting '{key}' to '{value_from_json}'. Skipping.")
+            else:
+                _logger.warning(f"Warning: Unknown setting '{key}' found in settings file. Ignoring.")
+        if hasattr(self, 'process_as_segments_var'):
+            self.toggle_merge_related_options_active_state()
+        # Removed update GUI verbosity
+
+    def _apply_theme(self, is_startup: bool = False):
+        """Applies the selected theme (dark or light) to the GUI."""
+        
+        if not THEMEDTK_AVAILABLE:
+            # ...
+            return
+        
+        # --- Core Theme Application (Must happen before detailed styling) ---
+        if self.dark_mode_var.get():
+            colors = DARK_MODE_COLORS
+            theme_name = colors["theme_name"]
+        else:
+            colors = LIGHT_MODE_COLORS
+            theme_name = colors["theme_name"]
+
+        self.current_theme_colors = colors
+        
+        if THEMEDTK_AVAILABLE:
+             # Apply the theme first
+             self.root.set_theme(theme_name) 
+
+        # --- Detailed TEntry/TCombobox Styling (Apply to CURRENT Theme) ---
+        # NOTE: We use style.map() for backgrounds to override theme defaults
+        entry_bg = colors["entry_bg"]
+        entry_fg = colors["fg"]
+        
+        # 1. TEntry Styling
+        self.style.configure("TEntry", foreground=entry_fg, insertcolor=entry_fg)
+        # Use map to force the fieldbackground for the default state (empty tuple)
+        self.style.map('TEntry', 
+                       fieldbackground=[('', entry_bg)], # '' is the default state
+                       foreground=[('', entry_fg)])
+        
+        # 2. TCombobox Styling
+        self.style.configure("TCombobox", foreground=entry_fg) 
+        self.style.map('TCombobox', 
+                       fieldbackground=[('readonly', entry_bg)], 
+                       foreground=[('readonly', entry_fg)])
+
+
+        # --- Manual Coloring for raw TK Menu ---
+        root_bg_color = colors["bg"]
+        root_fg_color = colors["fg"]
+        menu_active_bg = "#555555" if self.dark_mode_var.get() else "#dddddd"
+        menu_active_fg = "white" if self.dark_mode_var.get() else "black"
+
+        self.root.config(bg=root_bg_color)
+        
+        # NOTE: Since the widgets are now ttk, this is mainly for the root frame and menu
+        if hasattr(self, 'menubar'): 
+            # Menubar and Menus are raw tk.Menu and need manual color
+            self.menubar.config(bg=root_bg_color, fg=root_fg_color, activebackground=menu_active_bg, activeforeground=menu_active_fg)
+            if hasattr(self, 'file_menu'): self.file_menu.config(bg=root_bg_color, fg=root_fg_color)
+            if hasattr(self, 'help_menu'): self.help_menu.config(bg=root_bg_color, fg=root_fg_color)
+           
+        self.root.update_idletasks()
+    
+    def _cleanup_segment_folder(self, segment_subfolder_path, original_basename, master_meta):
+        del_folder = False
+        if not self.keep_intermediate_npz_var.get():
+            _logger.debug(f"Deleting intermediate segment subfolder for {original_basename} (Keep NPZ unchecked)...")
+            del_folder = True
+        else:
+            min_frames = self.min_frames_to_keep_npz_var.get()
+            if min_frames > 0:
+                orig_frames = master_meta.get("original_video_details", {}).get("raw_frame_count", 0)
+                if orig_frames < min_frames:
+                    _logger.info(f"  Video frames ({orig_frames}) < threshold ({min_frames}). Deleting segment folder for {original_basename} despite 'Keep NPZ'.")
+                    del_folder = True
+                else:
+                    _logger.info(f"  Video frames ({orig_frames}) >= threshold ({min_frames}). Segment folder for {original_basename} will be kept.")
+            else:
+                _logger.info(f"Keeping intermediate NPZ files for {original_basename} (Keep NPZ checked, no positive frame threshold).")
+        if del_folder:
+            if os.path.exists(segment_subfolder_path):
+                try: 
+                    shutil.rmtree(segment_subfolder_path)
+                    _logger.debug(f"Successfully deleted segment subfolder for {original_basename}.")
+                except Exception as e:
+                    _logger.error(f"  Error deleting segment subfolder {segment_subfolder_path}: {e}")
+            else:
+                _logger.warning(f"  Segment subfolder not found for deletion: {segment_subfolder_path}")
+        else:
+            _logger.info(f"Keeping intermediate NPZ files and _master_meta.json in {segment_subfolder_path}")
+
+    def _collect_all_settings(self) -> dict:
+        settings_data = {}
+        for key, tk_var in self.all_tk_vars.items():
+            try:
+                value = tk_var.get()
+                settings_data[key] = value
+                if key == "target_fps": # Specific debug for target_fps
+                    _logger.debug(f"_collect_all_settings: target_fps raw value: {value}, type: {type(value)}")
+            except tk.TclError:
+                _logger.warning(f"Warning: Could not get value for setting '{key}'. Skipping.")
+        return settings_data
+
+    def _create_menubar(self):
+        self.menubar = tk.Menu(self.root)
+        self.root.config(menu=self.menubar)
+
+        self.file_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="File", menu=self.file_menu)
+        self.file_menu.add_command(label="Load Settings...", command=self._load_all_settings)
+        self.file_menu.add_command(label="Save Settings As...", command=self._save_all_settings_as)
+        self.file_menu.add_command(label="Reset Settings to Default", command=self._reset_settings_to_defaults)
+        self.file_menu.add_separator()
+        self.file_menu.add_command(label="Restore Finished Input Files...", command=lambda: self._restore_input_files(folder_type="finished"))
+        self.file_menu.add_command(label="Restore Failed Input Files...", command=lambda: self._restore_input_files(folder_type="failed"))
+        self.file_menu.add_separator()
+        self.file_menu.add_checkbutton(label="Use Local Models Only", variable=self.use_local_models_only_var, onvalue=True, offvalue=False)
+        self.file_menu.add_checkbutton(label="Disable xFormers (VRAM Save)", variable=self.disable_xformers_var, onvalue=True, offvalue=False)
+        if THEMEDTK_AVAILABLE:
+            self.file_menu.add_checkbutton(label="Dark Mode", variable=self.dark_mode_var, command=self._apply_theme)
+        self.file_menu.add_separator()
+        self.file_menu.add_command(label="Exit", command=self.on_close)
+
+        self.help_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="Help", menu=self.help_menu)
+        self.help_menu.add_command(label="GUI Overview", command=lambda: self._show_help_for("general_gui_overview"))
+        # --- ADD THIS CHECKBUTTON TO HELP MENU ---
+        self.help_menu.add_separator() # Optional separator for clarity
+        self.help_menu.add_checkbutton(label="Enable Debug Logging", variable=self.debug_logging_enabled, command=self._toggle_debug_logging)
+        # -----------------------------------------
+
+    def _determine_input_mode_from_path(self, path_str: str) -> Tuple[str, bool]:
+        """
+        Analyzes a path string and determines the input mode and if it's a single source.
+        Returns: (input_mode_str, is_single_source_bool)
+        """
+        if not path_str or not os.path.exists(path_str):
+            _logger.warning(f"GUI Input: Path '{path_str}' is invalid or does not exist. Cannot determine input mode accurately.")
+            return "batch_folder", False
+
+        is_single_source = False
+        mode = "batch_folder"
+
+        if os.path.isfile(path_str):
+            is_single_source = True
+            ext = os.path.splitext(path_str)[1].lower()
+            is_video = any(ext in vid_ext.replace("*", "") for vid_ext in self.VIDEO_EXTENSIONS)
+            is_image = any(ext in img_ext.replace("*", "") for img_ext in self.IMAGE_EXTENSIONS)
+
+            if is_video:
+                mode = "single_video_file"
+            elif is_image:
+                mode = "single_image_file"
+            else:
+                _logger.warning(f"GUI Input: Typed path '{path_str}' is a file of unknown type. Treating as non-single source (batch fallback).")
+                mode = "batch_folder"
+                is_single_source = False
+        elif os.path.isdir(path_str):
+            if self._is_image_sequence_folder(path_str):
+                mode = "image_sequence_folder"
+                is_single_source = True
+            else:
+                mode = "batch_folder"
+                is_single_source = False
+        else:
+            _logger.warning(f"GUI Input: Path '{path_str}' exists but is not a regular file or directory.")
+            mode = "batch_folder"
+            is_single_source = False
+            
+        _logger.debug(f"GUI Input: Determined mode for path '{path_str}' as '{mode}', is_single_source: {is_single_source}.")
+        return mode, is_single_source
+
+    def _determine_video_paths_and_processing_mode(self, original_basename, master_meta_for_this_vid):
+        main_output_dir_for_video = self.output_dir.get()
+        was_processed_as_segments = master_meta_for_this_vid["global_processing_settings"]["processed_as_segments"]
+        segment_subfolder_path = None
+        if was_processed_as_segments:
+            segment_subfolder_name = get_segment_output_folder_name(original_basename)
+            segment_subfolder_path = os.path.join(main_output_dir_for_video, segment_subfolder_name)
+        return main_output_dir_for_video, segment_subfolder_path, was_processed_as_segments
+
+    def _execute_re_merge_wrapper(self, remerge_args_dict):
+        try: self._execute_re_merge(remerge_args_dict)
+        finally: self.message_queue.put(("set_ui_state", False))
+
+    def _execute_re_merge(self, remerge_args_dict):
+        self.stop_event.clear(); self.progress["value"] = 0; self.progress["maximum"] = 1
+        start_time = time.perf_counter()
+        primary_output_path = "N/A (Merge Failed)" # Initialize to ensure it's always defined
+        try:
+            if merge_depth_segments:
+                primary_output_path = merge_depth_segments.merge_depth_segments(**remerge_args_dict)
+                if primary_output_path:
+                    _logger.info(f"Re-Merge completed. Primary output saved to: {primary_output_path}")
+                else:
+                    _logger.warning("Re-Merge completed, but no primary output path was returned.")
+            else: 
+                _logger.warning("Segment merging for N/A for re-merge action skipped: merge_depth_segments module not available.")
+        except Exception as e:
+            _logger.exception(f"ERROR during re-merge execution: {e}")
+            self.status_message_var.set(f"Re-Merge Error: {e.__class__.__name__}") # Update GUI status
+        finally:
+            duration = format_duration(time.perf_counter() - start_time)
+            _logger.info(f"--- Re-Merge for: {os.path.basename(remerge_args_dict['master_meta_path'])} finished in {duration}. ---")
+            # If a primary output path was generated, show it in status for better feedback
+            if primary_output_path and primary_output_path != "N/A (Merge Failed)":
+                self.status_message_var.set(f"Re-Merge Finished. Output: {os.path.basename(primary_output_path)}")
+            else:
+                self.status_message_var.set("Re-Merge Finished (No primary output).")
+            self.message_queue.put(("progress", 1))
+
+    def _execute_generate_segment_visuals_wrapper(self, gen_visual_args_dict):
+        try: self._execute_generate_segment_visuals(gen_visual_args_dict)
+        finally: self.message_queue.put(("set_ui_state", False))
+
+    def _execute_generate_segment_visuals(self, gen_visual_args_dict):
+        self.stop_event.clear(); self.progress["value"] = 0
+        master_path = gen_visual_args_dict["master_meta_path"]
+        vis_fmt = gen_visual_args_dict["visual_format_to_generate"]
+        start_time = time.perf_counter()
+        
+        meta_data = load_json_file(master_path) 
+        if not meta_data: return 
+        
+        jobs = [j for j in meta_data.get("jobs_info", []) if j.get("status") == "success" and j.get("output_segment_filename")]
+        if not jobs: 
+            _logger.warning(f"No successful segments with output filenames found in {os.path.basename(master_path)} for visual generation.")
+            return
+        self.progress["maximum"] = len(jobs)
+        seg_folder_path = os.path.dirname(master_path)
+        updated_visual_paths = {}
+
+        for i, job_meta in enumerate(jobs):
+            if self.stop_event.is_set(): 
+                _logger.info("Segment visual generation cancelled during processing.")
+                break
+            seg_id, npz_name = job_meta.get("segment_id"), job_meta.get("output_segment_filename")
+            npz_path = os.path.join(seg_folder_path, npz_name)
+            _logger.debug(f"  Visual Gen - Processing segment {seg_id + 1 if seg_id is not None else '?'}/{len(jobs)}: {npz_name} for {vis_fmt}") 
+            
+            if not os.path.exists(npz_path): 
+                _logger.error(f"File not found: {npz_path}")
+                continue
+            try:
+                with np.load(npz_path) as data:
+                    if 'frames' not in data.files: 
+                        _logger.error(f"Key 'frames' not found in NPZ: {npz_name}")
+                        continue
+                    raw_frames = data['frames']
+                if raw_frames.size == 0: 
+                    _logger.warning(f"    Visual Gen - WARNING: Segment {npz_name} is empty. Skipping.")
+                    continue
+                
+                norm_frames = (raw_frames - raw_frames.min()) / (raw_frames.max() - raw_frames.min()) if raw_frames.max() != raw_frames.min() else np.zeros_like(raw_frames)
+                norm_frames = np.clip(norm_frames, 0, 1)
+                base_name_no_ext = os.path.splitext(npz_name)[0]
+                save_path, save_err = None, None
+                fps = float(job_meta.get("processed_at_fps", meta_data.get("original_video_details", {}).get("original_fps", 30.0)))
+                if fps <= 0: fps = 30.0
+
+                if vis_fmt == "mp4" or vis_fmt == "main10_mp4":
+                    save_path, save_err = save_depth_visual_as_mp4_util(
+                        norm_frames, 
+                        os.path.join(seg_folder_path, f"{base_name_no_ext}_visual.mp4"),
+                        fps,
+                        output_format=vis_fmt
+                    )
+                elif vis_fmt == "png_sequence":
+                    save_path, save_err = save_depth_visual_as_png_sequence_util(norm_frames, seg_folder_path, base_name_no_ext)
+                elif vis_fmt == "exr_sequence":
+                     if OPENEXR_AVAILABLE_GUI: save_path, save_err = save_depth_visual_as_exr_sequence_util(norm_frames, seg_folder_path, base_name_no_ext)
+                     else: save_err = "OpenEXR module not available in GUI environment."
+                elif vis_fmt == "exr":
+                    if OPENEXR_AVAILABLE_GUI:
+                        first_frame = norm_frames[0] if len(norm_frames) > 0 else None
+                        if first_frame is None: save_err = "No frame data for single EXR."
+                        else: save_path, save_err = save_depth_visual_as_single_exr_util(first_frame, seg_folder_path, base_name_no_ext)
+                    else: save_err = "OpenEXR module not available in GUI environment."
+
+                if save_path:
+                    _logger.debug(f"    Visual Gen - Successfully saved visual: {save_path}") 
+                    if seg_id is not None: updated_visual_paths[seg_id] = {"path": os.path.abspath(save_path), "format": vis_fmt}
+                if save_err: 
+                    _logger.error(f"    Visual Gen - ERROR saving visual for {npz_name}: {save_err}, format requested: {vis_fmt}") 
+            except Exception as e:
+                _logger.exception(f"    Visual Gen - ERROR processing segment {npz_name}: {e}") 
+            self.message_queue.put(("progress", i + 1))
+        
+        if updated_visual_paths:
+            _logger.info("Visual Gen - Updating master metadata with new visual paths...")
+            meta_content_update = load_json_file(master_path)
+            if meta_content_update:
+                updated_count = 0
+                for job_entry in meta_content_update.get("jobs_info", []):
+                    s_id = job_entry.get("segment_id")
+                    if s_id in updated_visual_paths:
+                        job_entry["intermediate_visual_path"] = updated_visual_paths[s_id]["path"]
+                        job_entry["intermediate_visual_format_saved"] = updated_visual_paths[s_id]["format"]
+                        updated_count +=1
+                if updated_count > 0:
+                    if save_json_file(meta_content_update, master_path, indent=4):
+                         _logger.info(f"Visual Gen - Master metadata updated for {updated_count} segments.")
+                else: _logger.info("Visual Gen - No segments in master metadata needed visual path updates.")
+        
+        duration = format_duration(time.perf_counter() - start_time)
+        _logger.info(f"--- Segment Visual Generation for: {os.path.basename(master_path)} (Format: {vis_fmt}) finished in {duration}. ---")
+        self.message_queue.put(("progress", len(jobs)))
+
+    def _finalize_video_processing(self, current_video_path, original_basename, master_meta_for_this_vid):
+        if master_meta_for_this_vid["completed_failed_jobs"] == 0:
+            master_meta_for_this_vid["overall_status"] = "all_success"
+        elif master_meta_for_this_vid["completed_successful_jobs"] > 0:
+            master_meta_for_this_vid["overall_status"] = "partial_success"
+        else:
+            master_meta_for_this_vid["overall_status"] = "all_failed"
+
+        _logger.info(f"Finished processing for {original_basename}. Overall Status: {master_meta_for_this_vid['overall_status']}.")
+        
+        main_output_dir, segment_subfolder_path, was_segments = self._determine_video_paths_and_processing_mode(original_basename, master_meta_for_this_vid)
+        master_meta_filepath, meta_saved = None, False
+        # --- FIX: Initialize merge_success and final_merged_path BEFORE conditional assignment ---
+        merge_success, final_merged_path = False, "N/A (Merge not applicable or failed)"
+        
+        try:
+            master_meta_filepath, meta_saved = self._save_master_metadata_and_cleanup_segment_json(master_meta_for_this_vid, original_basename, main_output_dir, was_segments, segment_subfolder_path)
+            
+            if was_segments and meta_saved and master_meta_for_this_vid["overall_status"] in ["all_success", "partial_success"]:
+                try: # Nested try-except to catch errors specifically from merging
+                    merge_success, final_merged_path = self._handle_segment_merging(master_meta_filepath, original_basename, main_output_dir, master_meta_for_this_vid)
+                except Exception as e_merge:
+                    _logger.error(f"Error during segment merging for {original_basename}: {e_merge}", exc_info=True)
+                    self.status_message_var.set(f"Merge Failed: {e_merge.__class__.__name__}")
+                    merge_success, final_merged_path = False, f"N/A (Merge failed due to {e_merge.__class__.__name__})"
+            elif was_segments:
+                # If segments were processed but not merged (e.g., all_failed status, or no successful segments)
+                _logger.debug(f"Skipping merge for {original_basename} (status: {master_meta_for_this_vid['overall_status']}, meta_saved: {meta_saved}). Segments remain in {segment_subfolder_path or 'N/A'}")
+                # No change to merge_success/final_merged_path as they were initialized to False/N/A
+            
+            if self.save_final_output_json_var.get():
+                self._save_final_output_sidecar_json(original_basename, final_merged_path, master_meta_filepath, master_meta_for_this_vid, was_segments, merge_success)
+            
+            if was_segments and segment_subfolder_path:
+                self._cleanup_segment_folder(segment_subfolder_path, original_basename, master_meta_for_this_vid)
+        except Exception as e:
+            _logger.exception(f"Error during finalization for {original_basename}: {e}")
+            self.status_message_var.set(f"Finalization Error: {e.__class__.__name__} for {original_basename}")
+
+        final_status = master_meta_for_this_vid.get("overall_status", "all_failed")
+
+        if self.effective_move_original_on_completion:
+            target_subfolder_name = ""
+            if final_status == "all_success":
+                target_subfolder_name = "finished"
+            elif final_status in ["partial_success", "all_failed"]:
+                target_subfolder_name = "failed"
+            else:
+                _logger.warning(f"Move Original: Could not determine 'finished' or 'failed' status for '{original_basename}' (status: '{final_status}'). Original file will not be moved.")
+
+            if target_subfolder_name:
+                self._move_original_source(current_video_path, original_basename, target_subfolder_name)
+        else:
+            _logger.info(f"Skipped moving original source '{original_basename}' (single file/sequence mode).")
+
+    def _get_segments_to_resume_or_overwrite(self, vid_path, original_basename, 
+                                             segment_subfolder_path, all_potential_segments_from_define,
+                                             base_job_info_for_video_ref: dict):
+        master_meta_path = os.path.join(segment_subfolder_path, f"{original_basename}_master_meta.json")
+        base_job_info_for_video_ref["pre_existing_successful_jobs"] = []
+
+        if os.path.exists(master_meta_path):
+            msg_dialog = (f"Master metadata found for '{original_basename}'. This video was previously processed/finalized.\n"
+                          f"Path: {master_meta_path}\n\n"
+                          f"Do you want to:\n"
+                          f"- 'Yes': Re-process only FAILED segments and update master metadata?\n"
+                          f"         (Existing successful segments will be preserved in the new master metadata).\n"
+                          f"- 'No': Delete ALL existing segments and master metadata and start fresh?\n"
+                          f"- 'Cancel': Skip this video entirely?")
+            choice = messagebox.askyesnocancel("Resume or Overwrite Finalized Segments?", msg_dialog, parent=self.root)
+
+            if choice is True:
+                _logger.info(f"Attempting to re-process failed segments for {original_basename} based on existing master metadata.")
+                master_data = load_json_file(master_meta_path)
+                if not master_data or "jobs_info" not in master_data:
+                    _logger.warning(f"Could not load master metadata or 'jobs_info' missing for {original_basename}. Defaulting to overwrite.")
+                    choice = False # Fallthrough
+                else:
+                    failed_segment_jobs_to_run = []
+                    successful_jobs_from_old_master = []
+                    potential_segments_dict = {seg_job['segment_id']: seg_job for seg_job in all_potential_segments_from_define}
+
+                    for job_in_meta in master_data.get("jobs_info", []):
+                        seg_id = job_in_meta.get("segment_id")
+                        if job_in_meta.get("status") == "success":
+                            successful_jobs_from_old_master.append(job_in_meta)
+                        elif seg_id is not None and seg_id in potential_segments_dict:
+                            failed_segment_jobs_to_run.append(potential_segments_dict[seg_id])
+                            _logger.debug(f"  Queueing segment ID {seg_id} (status: {job_in_meta.get('status', 'unknown')}) for {original_basename} for re-processing.")
+                        else:
+                            _logger.warning(f"  Warning: Segment (ID: {seg_id}, Status: {job_in_meta.get('status')}) from master_meta for {original_basename} not re-queueable. It will be ignored.")
+                    
+                    if not failed_segment_jobs_to_run:
+                        _logger.info(f"No re-processable failed segments found in master_meta for {original_basename}. All existing successful segments will be preserved if merging.")
+                        base_job_info_for_video_ref["pre_existing_successful_jobs"] = successful_jobs_from_old_master
+                        return [], "skipped_no_failed_segments_in_master_for_reprocessing"
+                    
+                    try:
+                        backup_master_meta_path = master_meta_path + f".backup_{time.strftime('%Y%m%d%H%M%S')}"
+                        shutil.move(master_meta_path, backup_master_meta_path)
+                        _logger.debug(f"Backed up existing file {os.path.basename(master_meta_path)} to: {os.path.basename(backup_master_meta_path)}")
+                    except Exception as e:
+                        _logger.warning(f"  Warning: Could not back up existing master metadata: {e}. It might be overwritten.")
+
+                    base_job_info_for_video_ref["pre_existing_successful_jobs"] = successful_jobs_from_old_master
+                    return failed_segment_jobs_to_run, "reprocessing_failed_from_master"
+            
+            if choice is False: 
+                _logger.info(f"User chose/defaulted to delete existing segment folder and start fresh for {original_basename}: {segment_subfolder_path}")
+                try:
+                    if os.path.exists(segment_subfolder_path): shutil.rmtree(segment_subfolder_path)
+                    _logger.debug(f"  Successfully deleted: {segment_subfolder_path}")
+                except Exception as e:
+                    _logger.error(f"  Error deleting {segment_subfolder_path}: {e}. Processing may fail or overwrite.")
+                return all_potential_segments_from_define, "overwriting_finalized"
+            
+            else: # Cancel
+                _logger.info(f"Skipping {original_basename} (user chose to cancel on finalized segments).")
+                return [], "skipped_finalized"
+
+        elif os.path.exists(segment_subfolder_path):
+            msg_dialog_incomplete = (f"Incomplete segment data found for '{original_basename}' (no master metadata file).\n"
+                                     f"Path: {segment_subfolder_path}\n\n"
+                                     f"Do you want to:\n"
+                                     f"- 'Yes': Resume by processing only missing/failed segments?\n"
+                                     f"         (Existing successful segments will be preserved).\n"
+                                     f"- 'No': Delete existing incomplete segments and start fresh?\n"
+                                     f"- 'Cancel': Skip this video entirely?")
+            choice_incomplete = messagebox.askyesnocancel("Resume Incomplete Segments?", msg_dialog_incomplete, parent=self.root)
+
+            if choice_incomplete is True:
+                _logger.info(f"Attempting to resume incomplete segments for {original_basename}.")
+                segments_to_run = []
+                num_already_complete = 0
+                completed_segment_metadata_from_json = []
+
+                for potential_segment_job in all_potential_segments_from_define:
+                    seg_id = potential_segment_job["segment_id"]
+                    total_segs = potential_segment_job["total_segments"]
+                    expected_npz_filename = get_segment_npz_output_filename(original_basename, seg_id, total_segs)
+                    expected_json_filename = get_sidecar_json_filename(expected_npz_filename)
+                    npz_path = os.path.join(segment_subfolder_path, expected_npz_filename)
+                    json_path = os.path.join(segment_subfolder_path, expected_json_filename)
+
+                    is_complete_and_successful = False
+                    if os.path.exists(npz_path) and os.path.exists(json_path):
+                        segment_meta = load_json_file(json_path)
+                        if segment_meta and segment_meta.get("status") == "success":
+                            is_complete_and_successful = True
+                            num_already_complete += 1
+                            completed_segment_metadata_from_json.append(segment_meta)
+                        else:
+                            status_msg = segment_meta.get('status', 'unknown') if segment_meta else 'JSON missing/corrupt'
+                            _logger.info(f"  Segment {seg_id+1}/{total_segs} for {original_basename} found but not successful (status: {status_msg}). Will re-process.")
+                    else:
+                        _logger.debug(f"  Segment {seg_id+1}/{total_segs} for {original_basename} (NPZ: {expected_npz_filename}) not found or JSON missing. Will process.")
+
+                    if not is_complete_and_successful:
+                        segments_to_run.append(potential_segment_job)
+                
+                if num_already_complete > 0:
+                    _logger.info(f"Found {num_already_complete} successfully completed segments for {original_basename} that will be skipped during processing.")
+                
+                base_job_info_for_video_ref["pre_existing_successful_jobs"] = completed_segment_metadata_from_json
+
+                if not segments_to_run and num_already_complete == len(all_potential_segments_from_define):
+                    _logger.warning(f"  All segments for {original_basename} appear complete from individual files, but master_meta was missing. Consider re-merging. Skipping processing.")
+                    return [], "skipped_all_segments_found_complete_no_master"
+                elif not segments_to_run and num_already_complete < len(all_potential_segments_from_define):
+                     _logger.warning(f"  No segments to run for {original_basename}, but not all were found complete. Total defined: {len(all_potential_segments_from_define)}, Found complete: {num_already_complete}")
+                     return [], "skipped_no_segments_to_run_incomplete"
+                return segments_to_run, "resuming_incomplete"
+
+            elif choice_incomplete is False:
+                _logger.info(f"User chose to delete existing incomplete segment folder and start fresh for {original_basename}: {segment_subfolder_path}")
+                try:
+                    if os.path.exists(segment_subfolder_path): shutil.rmtree(segment_subfolder_path)
+                    _logger.debug(f"  Successfully deleted: {segment_subfolder_path}")
+                except Exception as e:
+                    _logger.error(f"  Error deleting {segment_subfolder_path}: {e}. Processing may fail or overwrite.")
+                return all_potential_segments_from_define, "overwriting_incomplete"
+            
+            else: # Cancel
+                _logger.info(f"Skipping {original_basename} (user chose to cancel on incomplete segments).")
+                return [], "skipped_incomplete"
+                
+        else: # Segment folder does not exist
+            return all_potential_segments_from_define, "fresh_processing"
+
+    def _handle_segment_merging(self, master_meta_filepath, original_basename, main_output_dir, master_meta) -> Tuple[bool, str]:
+        """
+        Handles the merging of segments, potentially generating a second robustly normalized output.
+        Returns a tuple: (bool indicating merge success, str path of the primary merged output).
+        """
+        if not merge_depth_segments:
+            _logger.warning(f"Segment merging for {original_basename} skipped: merge_depth_segments module not available.")
+            return False, "N/A (Merge module not available - module missing)"
+        
+        out_fmt = self.merge_output_format_var.get()
+        output_suffix = self.merge_output_suffix_var.get()
+        merged_base_name = f"{original_basename}{output_suffix}"
+
+        align_method = "linear_blend" if self.merge_alignment_method_var.get() == "Linear Blend" else "shift_scale"
+        
+        enable_dual_output = self.enable_dual_output_robust_norm.get() 
+        robust_low_perc = self.robust_norm_low_percentile.get()
+        robust_high_perc = self.robust_norm_high_percentile.get()
+        robust_output_min = self.robust_norm_output_min.get()
+        robust_output_max = self.robust_norm_output_max.get()
+        robust_output_suffix_val = self.robust_output_suffix.get()
+        is_depth_far_black_val = self.is_depth_far_black.get()
+
+        try:
+            primary_output_path = merge_depth_segments.merge_depth_segments(
+                master_meta_path=master_meta_filepath, 
+                output_path_arg=main_output_dir,
+                do_dithering=self.merge_dither_var.get(), 
+                dither_strength_factor=self.merge_dither_strength_var.get(),
+                apply_gamma_correction=self.merge_gamma_correct_var.get(), 
+                gamma_value=self.merge_gamma_value_var.get(),
+                use_percentile_norm=self.merge_percentile_norm_var.get(), 
+                norm_low_percentile=self.merge_norm_low_perc_var.get(),
+                norm_high_percentile=self.merge_norm_high_perc_var.get(), 
+                output_format=out_fmt,
+                merge_alignment_method=align_method, 
+                output_filename_override_base=merged_base_name,
+                enable_dual_output_robust_norm=enable_dual_output,
+                robust_norm_low_percentile=robust_low_perc,
+                robust_norm_high_percentile=robust_high_perc,
+                robust_norm_output_min=robust_output_min,
+                robust_norm_output_max=robust_output_max,
+                robust_output_suffix=robust_output_suffix_val,
+                is_depth_far_black=is_depth_far_black_val
+            )
+            
+            # If primary_output_path is None, the merge failed or didn't produce a path
+            if primary_output_path is None:
+                _logger.error(f"merge_depth_segments returned None for {original_basename}. Merge considered failed.")
+                return False, f"N/A (Merge module returned no path)"
+            else:
+                _logger.info(f"Primary merge for {original_basename} successful. Output: {primary_output_path}")
+                return True, primary_output_path # Successful merge
+                
+        except Exception as e: 
+            _logger.exception(f"Exception during merge_depth_segments call for {original_basename}: {e}")
+            self.status_message_var.set(f"Merge Error: {e.__class__.__name__} for {original_basename}")
+            return False, f"N/A (Merge failed due to {e.__class__.__name__})"
+        
+    def _initialize_master_metadata_entry(self, original_basename, job_info_for_original_details, total_expected_jobs_for_this_video):
+        entry = {
+            "original_video_basename": original_basename,
+            "original_video_details": {
+                "raw_frame_count": job_info_for_original_details.get("original_video_raw_frame_count", 0),
+                "original_fps": job_info_for_original_details.get("original_video_fps", 30.0)
+            },
+            "global_processing_settings": {
+                "guidance_scale": self.guidance_scale.get(),
+                "inference_steps": self.inference_steps.get(),
+                "target_height_setting": self.target_height.get(),
+                "target_width_setting": self.target_width.get(),
+                "seed_setting": self.seed.get(),
+                "target_fps_setting": self.target_fps.get(),
+                "process_max_frames_setting": self.process_length.get(),
+                "gui_window_size_setting": self.window_size.get(),
+                "gui_overlap_setting": self.overlap.get(),
+                "processed_as_segments": self.process_as_segments_var.get(),
+            },
+            "jobs_info": [], "overall_status": "pending",
+            "total_expected_jobs": total_expected_jobs_for_this_video,
+            "completed_successful_jobs": 0, "completed_failed_jobs": 0,
+        }
+        if self.process_as_segments_var.get():
+            entry["global_processing_settings"]["segment_definition_output_window_frames"] = job_info_for_original_details.get("gui_desired_output_window_frames")
+            entry["global_processing_settings"]["segment_definition_output_overlap_frames"] = job_info_for_original_details.get("gui_desired_output_overlap_frames")
+        return entry
+
+    def _is_image_sequence_folder(self, folder_path: str) -> bool:
+        """Rudimentary check if a folder looks like an image sequence."""
+        if not os.path.isdir(folder_path): return False
+        
+        image_files_count = 0
+        video_files_count = 0
+        sub_dirs_count = 0
+
+        for item in os.listdir(folder_path):
+            item_path = os.path.join(folder_path, item)
+            if os.path.isdir(item_path):
+                sub_dirs_count += 1
+                continue
+            
+            ext = os.path.splitext(item)[1].lower()
+            if any(ext in img_ext.replace("*", "") for img_ext in self.IMAGE_EXTENSIONS):
+                image_files_count +=1
+            elif any(ext in vid_ext.replace("*", "") for vid_ext in self.VIDEO_EXTENSIONS):
+                video_files_count +=1
+        
+        return image_files_count > 5 and video_files_count == 0 and sub_dirs_count == 0
+
+    def _load_help_content(self):
+        if self._help_data is None: # Only load once
+            raw_data = load_json_file(DepthCrafterGUI.HELP_CONTENT_FILENAME)
+            if raw_data:
+                self._help_data = raw_data # Keep raw data for future potential uses
+                # Populate the module-level _HELP_TEXTS dictionary for tooltips
+                global _HELP_TEXTS
+                _HELP_TEXTS.clear() # Clear existing in case of reload (e.g., in future)
+                for key, content in raw_data.items():
+                    if "text" in content: # Ensure 'text' key exists
+                        _HELP_TEXTS[key] = content["text"]
+            else:
+                self._help_data = {} # Indicate loading failed
+                _logger.warning(f"Warning: Could not load help content from {DepthCrafterGUI.HELP_CONTENT_FILENAME}. Tooltips will be limited/show 'not found'.")
+        return self._help_data
+
+    def _load_all_settings(self):
+        filepath = filedialog.askopenfilename(title="Load Settings File", filetypes=self.SETTINGS_FILETYPES, initialdir=self.last_settings_dir)
+        if not filepath:
+            _logger.info("Load settings cancelled by user.")
+            return
+        self.last_settings_dir = os.path.dirname(filepath)
+        settings_data = load_json_file(filepath)
+        if settings_data:
+            self._apply_all_settings(settings_data)
+            _logger.info(f"Successfully loaded settings from: {filepath}")
+        else:
+            messagebox.showerror("Load Error", f"Could not load settings from:\n{filepath}\nSee console log for details.")
+
+    def _move_original_source(self, current_video_path: str, original_basename: str, target_subfolder: str):
+        _logger.info(f"Moving original source '{original_basename}' to '{target_subfolder}' folder.")
+        try:
+            path_from_gui_input_field = self.input_dir_or_file_var.get()
+
+            actual_input_root_for_target_folder: str
+            if os.path.isdir(path_from_gui_input_field):
+                actual_input_root_for_target_folder = path_from_gui_input_field
+            elif os.path.isfile(path_from_gui_input_field):
+                actual_input_root_for_target_folder = os.path.dirname(path_from_gui_input_field)
+            else:
+                _logger.warning(f"Move Original: The GUI input path '{path_from_gui_input_field}' is invalid for determining the target folder root. Using dirname of processed item as fallback.")
+                actual_input_root_for_target_folder = os.path.dirname(current_video_path)
+                if not os.path.isdir(actual_input_root_for_target_folder):
+                    _logger.error(f"Move Original: Cannot determine a valid root directory for target folder based on input path '{current_video_path}'.")
+                    _logger.error(f"ERROR moving original '{original_basename}': Cannot determine valid root for target folder.")
+                    return
+
+            destination_dir = os.path.join(actual_input_root_for_target_folder, target_subfolder)
+            os.makedirs(destination_dir, exist_ok=True)
+            
+            dest_filename = os.path.basename(current_video_path)
+            dest_path = os.path.join(destination_dir, dest_filename)
+
+            if os.path.exists(current_video_path):
+                if os.path.exists(dest_path):
+                    base, ext = os.path.splitext(dest_filename) 
+                    new_dest_name = f"{base}{time.strftime('_%Y%m%d%H%M%S')}{ext}"
+                    dest_path = os.path.join(destination_dir, new_dest_name)
+                    _logger.info(f"Move Original: Destination already exists. Renaming '{dest_filename}' to '{new_dest_name}'.")
+                
+                shutil.move(current_video_path, dest_path)
+                _logger.debug(f"Successfully moved original source '{dest_filename}' to '{target_subfolder}' folder.")
+            else:
+                _logger.warning(f"Move Original: Source path to move does not exist: {current_video_path}")
+        except Exception as e:
+            _logger.exception(f"ERROR moving original '{original_basename}': {e}")
+
+    def _process_single_job(self, demo, job_info, master_meta_for_this_vid):
+        
+        returned_job_specific_metadata = {}
+        job_successful = False
+        is_segment_job = job_info.get("is_segment", False)
+        original_basename = job_info["original_basename"]
+        
+        snapshotted_settings = master_meta_for_this_vid["global_processing_settings"]
+        guidance_scale_for_job = snapshotted_settings["guidance_scale"]
+        inference_steps_for_job = snapshotted_settings["inference_steps"]
+        seed_for_job = snapshotted_settings["seed_setting"]
+        process_length_for_run_param = snapshotted_settings["process_max_frames_setting"] if not is_segment_job else -1
+        
+        window_size_for_pipe_call = snapshotted_settings["gui_window_size_setting"]
+        overlap_for_pipe_call = snapshotted_settings["gui_overlap_setting"]
+
+        try:
+            keep_npz_for_this_job_run = False
+            if is_segment_job:
+                if self.keep_intermediate_npz_var.get():
+                    min_frames_thresh = self.min_frames_to_keep_npz_var.get()
+                    orig_vid_frame_count = job_info.get("original_video_raw_frame_count", 0)
+                    if min_frames_thresh <= 0 or orig_vid_frame_count >= min_frames_thresh:
+                        keep_npz_for_this_job_run = True
+            
+            saved_data_filepath, returned_job_specific_metadata = demo.run(
+                video_path_or_frames_or_info=job_info,
+                num_denoising_steps=inference_steps_for_job, 
+                guidance_scale=guidance_scale_for_job,
+                base_output_folder=self.output_dir.get(), 
+                gui_window_size=window_size_for_pipe_call,
+                gui_overlap=overlap_for_pipe_call, 
+                process_length_for_read_full_video=process_length_for_run_param, 
+                target_height=self.target_height.get(),
+                target_width=self.target_width.get(),
+                seed=seed_for_job, 
+                original_video_basename_override=original_basename,
+                segment_job_info_param=job_info if is_segment_job else None,
+                keep_intermediate_npz_config=keep_npz_for_this_job_run,
+                intermediate_segment_visual_format_config=self.keep_intermediate_segment_visual_format_var.get(),
+                save_final_json_for_this_job_config=self.save_final_output_json_var.get()
+            )
+            if not returned_job_specific_metadata:
+                returned_job_specific_metadata = {"status": "failure_no_metadata_from_run"}
+                _logger.warning(f"Warning: No job-specific metadata returned from run for {original_basename}.")
+            
+            if saved_data_filepath and returned_job_specific_metadata.get("status") == "success":
+                job_successful = True
+            else:
+                log_msg_prefix_local = f"Segment {job_info.get('segment_id', -1)+1}/{job_info.get('total_segments', 0)}" if is_segment_job else "Full video"
+                _logger.info(f"  Job for {original_basename} ({log_msg_prefix_local}) status: {returned_job_specific_metadata.get('status', 'unknown_status')}")
+        
+        except Exception as e:
+            if not returned_job_specific_metadata: returned_job_specific_metadata = {}
+            returned_job_specific_metadata["status"] = "exception_in_gui_process_single_job"
+            returned_job_specific_metadata["error_message"] = str(e)
+            log_msg_prefix_local = f"Segment {job_info.get('segment_id', -1)+1}/{job_info.get('total_segments', 0)}" if is_segment_job else "Full video"
+            _logger.exception(f"  Exception during job for {original_basename} ({log_msg_prefix_local}): {e}")
+            self.status_message_var.set(f"Error: {e.__class__.__name__} during {original_basename}")
+        return job_successful, returned_job_specific_metadata
+
+    def _recolor_tk_widgets(self, parent, bg_color, fg_color, entry_bg):
+        """Recursively recolors raw tk widgets within a parent container."""
+        for widget in parent.winfo_children():
+            widget_type = widget.winfo_class()
+            try:
+                # Basic widgets that support bg/fg config
+                if widget_type in ('Label', 'Checkbutton'):
+                    widget.config(bg=bg_color, fg=fg_color)
+                elif widget_type == 'Entry':
+                    widget.config(bg=entry_bg, fg=fg_color, insertbackground=fg_color)
+                # Buttons usually look better controlled by the theme/style
+                # elif widget_type == 'Button':
+                #     widget.config(bg=bg_color, fg=fg_color) 
+                # Containers
+                elif widget_type in ('Frame', 'Toplevel', 'Menubutton'):
+                    widget.config(bg=bg_color)
+                # LabelFrame title
+                elif widget_type == 'Labelframe':
+                    widget.config(bg=bg_color, fg=fg_color)
+            except tk.TclError:
+                # Some widgets (like a tk.Text in a Log window, if you had one)
+                # or ttk widgets passed to this function will raise an error. Ignore.
+                pass 
+            
+            # Recurse into children
+            self._recolor_tk_widgets(widget, bg_color, fg_color, entry_bg)
+
+    def _reset_settings_to_defaults(self):
+        if messagebox.askyesno("Reset Settings", "Are you sure you want to reset all settings to their default values?"):
+            self._apply_all_settings(self.initial_default_settings)
+            _logger.info("All settings have been reset to their initial defaults.")
+            self.status_message_var.set("Settings reset to defaults.")
+
+    def _restore_input_files(self, folder_type: str): # Added folder_type argument
+        """Moves original input files from a specified 'finished' or 'failed' subfolder back to their input directory."""
+        display_folder_name = folder_type.capitalize() # "Finished" or "Failed"
+
+        if not messagebox.askyesno(f"Restore {display_folder_name} Input Files", 
+                                   f"Are you sure you want to move original input files from the '{display_folder_name}' subfolder "
+                                   f"back to their original input directory?"):
+            _logger.info(f"Restore {display_folder_name} operation cancelled by user confirmation.")
+            return
+
+        source_input_path = self.input_dir_or_file_var.get()
+
+        if not os.path.isdir(source_input_path):
+            messagebox.showerror("Restore Error", f"Restore '{display_folder_name}' input files operation is only applicable when 'Input Folder/File' is set to a directory (batch mode).")
+            _logger.warning(f"Restore {display_folder_name} operation skipped: Input Folder/File is not a directory: {source_input_path}")
+            self.status_message_var.set(f"Restore {display_folder_name} failed: Input is not a directory.")
+            return
+
+        restored_count = 0
+        errors_count = 0
+        
+        # Only process the specified folder_type
+        finished_source_folder = os.path.join(source_input_path, folder_type) # Use folder_type directly
+        
+        if os.path.isdir(finished_source_folder):
+            _logger.info(f"==> Restoring input files from: {finished_source_folder}")
+            for filename in os.listdir(finished_source_folder):
+                src_path = os.path.join(finished_source_folder, filename)
+                dest_path = os.path.join(source_input_path, filename) 
+                
+                if os.path.isfile(src_path):
+                    try:
+                        if os.path.exists(dest_path):
+                            base, ext = os.path.splitext(filename)
+                            new_filename = f"{base}_restored_{time.strftime('%Y%m%d%H%M%S')}{ext}"
+                            dest_path = os.path.join(source_input_path, new_filename)
+                            _logger.warning(f"Input file '{filename}' already exists in '{source_input_path}'. Restoring as '{new_filename}'.")
+                        
+                        shutil.move(src_path, dest_path)
+                        restored_count += 1
+                        _logger.debug(f"Moved input file '{filename}' to '{source_input_path}'")
+                    except Exception as e:
+                        errors_count += 1
+                        _logger.error(f"Error moving input file '{filename}' from '{finished_source_folder}': {e}", exc_info=True)
+            
+            # Clean up empty folder after restoring
+            try:
+                if not os.listdir(finished_source_folder):
+                    os.rmdir(finished_source_folder)
+                    _logger.info(f"Removed empty folder: {finished_source_folder}")
+            except OSError as e:
+                _logger.warning(f"Could not remove empty folder '{finished_source_folder}': {e}")
+        else:
+            _logger.info(f"==> Input '{display_folder_name}' folder not found: {finished_source_folder}")
+
+
+        # Final status update
+        if restored_count > 0 or errors_count > 0:
+            self.status_message_var.set(f"Restore {display_folder_name} complete: {restored_count} input files moved, {errors_count} errors.")
+            messagebox.showinfo("Restoration Complete", 
+                                f"{display_folder_name} input files restoration attempted.\n"
+                                f"Successfully restored: {restored_count} file(s)\n"
+                                f"Skipped (due to error/conflict): {errors_count} file(s)")
+        else:
+            self.status_message_var.set(f"No {display_folder_name.lower()} input files found to restore.")
+            messagebox.showinfo("Restoration Complete", f"No input files found in the '{display_folder_name}' folder to restore.")
+
+    def _save_all_settings_as(self):
+        filepath = filedialog.asksaveasfilename(title="Save Settings As", filetypes=self.SETTINGS_FILETYPES, defaultextension=".json", initialdir=self.last_settings_dir)
+        if not filepath:
+            _logger.info("Save settings cancelled by user.")
+            return
+        self.last_settings_dir = os.path.dirname(filepath)
+        current_settings = self._collect_all_settings()
+        if save_json_file(current_settings, filepath, indent=4):
+            _logger.info(f"Successfully saved settings to: {filepath}")
+            messagebox.showinfo("Save Successful", f"Settings saved to:\n{filepath}")
+        else:
+            messagebox.showerror("Save Error", f"Could not save settings to:\n{filepath}\nSee console log for details.")
+
+    def _save_final_output_sidecar_json(self, original_basename, final_merged_path, master_meta_filepath, master_meta, was_segments, merge_successful):
+        json_path, json_content = None, {}
+        output_suffix_val = self.merge_output_suffix_var.get()
+
+        if was_segments:
+            if merge_successful and final_merged_path and not final_merged_path.startswith("N/A"):
+                out_fmt_selected = self.merge_output_format_var.get()
+                
+                json_content = {
+                    "source_video_basename": original_basename, "processing_mode": "segmented_then_merged",
+                    "final_output_path": os.path.abspath(final_merged_path), 
+                    "final_output_format_selected": out_fmt_selected,
+                    "master_metadata_path_source": os.path.abspath(master_meta_filepath) if master_meta_filepath else None,
+                    "global_processing_settings_summary": master_meta.get("global_processing_settings"),
+                    "merge_settings_summary": {
+                        "output_format_selected": out_fmt_selected, 
+                        "output_suffix": output_suffix_val,
+                        "alignment_method": self.merge_alignment_method_var.get(),
+                        "dithering": self.merge_dither_var.get(), "dither_strength": self.merge_dither_strength_var.get(),
+                        "gamma_correction": self.merge_gamma_correct_var.get(),
+                        "gamma_value_if_applied": self.merge_gamma_value_var.get() if self.merge_gamma_correct_var.get() else 1.0,
+                        "percentile_norm": self.merge_percentile_norm_var.get(),
+                        "norm_low_perc": self.merge_norm_low_perc_var.get(), "norm_high_perc": self.merge_norm_high_perc_var.get(),
+                    }, "generation_timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                }
+                if os.path.isdir(final_merged_path):
+                    json_path = os.path.join(os.path.dirname(final_merged_path.rstrip(os.sep)), f"{os.path.basename(final_merged_path.rstrip(os.sep))}.json")
+                elif os.path.isfile(final_merged_path):
+                    json_path = get_sidecar_json_filename(final_merged_path)
+                else: _logger.warning(f"    Cannot determine final JSON path for merged {original_basename} (output path: {final_merged_path}).") 
+            else: _logger.info(f"  Skipping final JSON for merged {original_basename} (merge not successful/path invalid).") 
+        else:
+            if master_meta and master_meta.get("jobs_info"):
+                job_info = master_meta["jobs_info"][0]
+                relative_output_filename = job_info.get("output_video_filename") 
+                if relative_output_filename:
+                    out_path = os.path.join(self.output_dir.get(), relative_output_filename)
+                    out_fmt_from_ext = os.path.splitext(relative_output_filename)[1].lstrip('.') 
+
+                    json_content = {
+                        "source_video_basename": original_basename, "processing_mode": "full_video",
+                        "final_output_path": os.path.abspath(out_path), 
+                        "final_output_format": out_fmt_from_ext,
+                        "global_processing_settings": master_meta.get("global_processing_settings"),
+                        "job_specific_details": job_info,
+                        "generation_timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    }
+                    if os.path.isdir(out_path): 
+                         json_path = os.path.join(os.path.dirname(out_path.rstrip(os.sep)), f"{os.path.basename(out_path.rstrip(os.sep))}.json")
+                    elif os.path.isfile(out_path):
+                        json_path = get_sidecar_json_filename(out_path)
+                    else: _logger.warning(f"    Cannot determine final JSON path for full video {original_basename} (output path: {out_path}).") 
+                else: _logger.warning(f"  Skipping final JSON for full video {original_basename} (output path/format missing from job_info).") 
+            else: _logger.warning(f"  Skipping final JSON for full video {original_basename} (master_meta or job_info missing).") 
+
+        if json_path and json_content:
+            _logger.debug(f"    Attempting to save final output JSON to: {json_path}") 
+            if save_json_file(json_content, json_path): 
+                _logger.debug(f"  Successfully saved sidecar JSON for final output: {json_path}") 
+        elif self.save_final_output_json_var.get():
+            mode = "merged" if was_segments else "full video"
+            _logger.warning(f"  Final output JSON for {mode} '{original_basename}' not created (conditions not met, or save failed).")
+
+    def _save_master_metadata_and_cleanup_segment_json(self, master_meta_to_save, original_basename, main_output_dir, was_segments, segment_subfolder_path):
+        master_meta_filepath, meta_saved = None, False
+        if was_segments:
+            if not segment_subfolder_path:
+                segment_subfolder_path = os.path.join(main_output_dir, get_segment_output_folder_name(original_basename))
+            os.makedirs(segment_subfolder_path, exist_ok=True)
+            master_meta_filepath = os.path.join(segment_subfolder_path, f"{original_basename}_master_meta.json")
+        else:
+            master_meta_filepath = os.path.join(main_output_dir, f"{original_basename}_master_meta.json")
+
+        should_save_master_meta_here = was_segments
+        if should_save_master_meta_here:
+            if save_json_file(master_meta_to_save, master_meta_filepath):
+                _logger.debug(f"Saved master metadata for {original_basename} to {master_meta_filepath}")
+                meta_saved = True
+            if was_segments and meta_saved and segment_subfolder_path:
+                _logger.debug(f"  Attempting to delete individual segment JSONs for {original_basename} (master created).")
+                deleted_count = 0
+                for job_data in master_meta_to_save.get("jobs_info", []):
+                    npz_file = job_data.get("output_segment_filename")
+                    if npz_file:
+                        json_to_del = os.path.join(segment_subfolder_path, get_sidecar_json_filename(npz_file))
+                        if os.path.exists(json_to_del):
+                            try: os.remove(json_to_del); deleted_count += 1
+                            except Exception as e: _logger.error(f"ERROR deleting individual segment JSON {json_to_del}: {e}")
+                _logger.debug(f"    Deleted {deleted_count} individual segment JSONs.")
+            elif was_segments and not meta_saved:
+                _logger.warning(f"  Skipping deletion of individual segment JSONs for {original_basename} (master_meta.json not saved).")
+        elif not was_segments:
+            _logger.debug(f"Skipping save of '{os.path.basename(master_meta_filepath)}' by _save_master_metadata for full video mode for {original_basename}.")
+            meta_saved = False
+        return master_meta_filepath, meta_saved
+
+    def _set_ui_processing_state(self, is_processing: bool):
+        new_state = tk.DISABLED if is_processing else tk.NORMAL
+        cancel_state = tk.NORMAL if is_processing else tk.DISABLED
+        unique_widgets = list(set(self.widgets_to_disable_during_processing))
+
+        for widget in unique_widgets:
+            if widget == self.cancel_button: continue
+            if hasattr(widget, 'configure'):
+                try:
+                    if isinstance(widget, ttk.Combobox): widget.configure(state='disabled' if is_processing else 'readonly')
+                    else: widget.configure(state=new_state)
+                except tk.TclError: pass 
+                
+        if hasattr(self, 'help_menu') and self.help_menu:
+            try:
+                self.help_menu.entryconfig("Enable Debug Logging", state=new_state)
+            except tk.TclError: pass
+        
+        if hasattr(self, 'cancel_button') and self.cancel_button:
+             try: self.cancel_button.configure(state=cancel_state)
+             except tk.TclError: pass
+
+        if hasattr(self, 'file_menu'):
+            try:
+                self.file_menu.entryconfig("Use Local Models Only", state=new_state)
+                for item_label in ["Load Settings...", "Save Settings As...", "Reset Settings to Default"]:
+                    self.file_menu.entryconfig(item_label, state=new_state)
+            except tk.TclError: pass
+
+        # --- Phase 2: If processing has *finished*, re-evaluate conditional states ---
+        # This prevents conditional toggles from overriding the DISABLED state prematurely.
+        if not is_processing:
+            self.toggle_merge_related_options_active_state()
+            self.toggle_secondary_output_options_active_state()
+
+    def _show_help_for(self, help_key: str):
+        """Displays help content for a given key in a Tkinter Toplevel window."""
+        # _help_data should already be loaded by __init__
+        content = self._help_data.get(help_key)
+        
+        if not content:
+            messagebox.showinfo("Help Not Found", f"No help information available for '{help_key}'.\nEnsure '{DepthCrafterGUI.HELP_CONTENT_FILENAME}' is present and contains this key.")
+            _logger.warning(f"No help content found for key: '{help_key}' in {DepthCrafterGUI.HELP_CONTENT_FILENAME}.")
+            return
+
+        help_title = content.get("title", "Help Information")
+        help_text_str = content.get("text", "No details available.")
+        
+        # Now, create the Toplevel window as it was before
+        help_window = tk.Toplevel(self.root)
+        help_window.title(help_title)
+        help_window.minsize(400, 200)
+        help_window.transient(self.root)
+        help_window.grab_set()
+        
+        text_frame = ttk.Frame(help_window, padding="10")
+        text_frame.pack(expand=True, fill="both")
+        
+        help_text_widget = tk.Text(text_frame, wrap=tk.WORD, relief="flat", borderwidth=0, padx=5, pady=5, font=("Segoe UI", 9))
+        help_text_widget.insert(tk.END, help_text_str)
+        help_text_widget.config(state=tk.DISABLED)
+        
+        scrollbar = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=help_text_widget.yview)
+        help_text_widget['yscrollcommand'] = scrollbar.set
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        help_text_widget.pack(side=tk.LEFT, expand=True, fill="both")
+        
+        button_frame = ttk.Frame(help_window, padding=(0, 5, 0, 10))
+        button_frame.pack(fill=tk.X)
+        ok_button = tttk.Button(button_frame, text="OK", command=help_window.destroy, width=10)
+        ok_button.pack()
+        
+        self.root.update_idletasks()
+        help_window.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() // 2) - (help_window.winfo_width() // 2)
+        y = self.root.winfo_y() + (self.root.winfo_height() // 2) - (help_window.winfo_height() // 2)
+        help_window.geometry(f"+{x}+{y}")
+        ok_button.focus_set()
+        help_window.wait_window()
+        _logger.debug(f"Displayed help overview for '{help_key}'.")
+        
+    def _start_processing_wrapper(self, video_processing_jobs, base_job_info_map):
+        try: 
+            self.start_processing(video_processing_jobs, base_job_info_map)
+        finally: 
+            self._set_ui_processing_state(False)
+
+    def _toggle_debug_logging(self):
+        if self.debug_logging_enabled.get():
+            logging.getLogger().setLevel(logging.DEBUG) # Set root logger to DEBUG
+            _logger.info("Debug logging ENABLED.")
+        else:
+            logging.getLogger().setLevel(logging.INFO)  # Set root logger back to INFO
+            _logger.info("Debug logging DISABLED (set to INFO level).")
+
     def add_param(self, parent, label, var, row):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="e", padx=5, pady=2)
         entry = ttk.Entry(parent, textvariable=var, width=20)
@@ -1353,7 +2404,7 @@ class DepthCrafterGUI:
                 if widget and hasattr(widget, 'configure'):
                     try: widget.configure(state=state)
                     except tk.TclError: pass
-    
+
     def toggle_secondary_output_options_active_state(self, *args):
         if not hasattr(self, 'enable_dual_output_robust_norm') or not hasattr(self, 'secondary_output_widgets_references'):
             return
@@ -1374,1058 +2425,7 @@ class DepthCrafterGUI:
                     if isinstance(widget_item, ttk.Combobox): widget_item.configure(state='readonly' if active else 'disabled')
                     else: widget_item.configure(state=state)
                 except tk.TclError: pass
-                
-    def _apply_all_settings(self, settings_data: dict):
-        for key, value_from_json in settings_data.items():
-            if key == "target_fps": # Specific debug
-                _logger.debug(f"_apply_all_settings: Loading target_fps from JSON. Value: {value_from_json}, Type: {type(value_from_json)}")
-            if key in self.all_tk_vars:
-                try:
-                    self.all_tk_vars[key].set(value_from_json)
-                    # After setting, get it back to see what DoubleVar stored
-                    if key == "target_fps":
-                        val_in_doublevar = self.all_tk_vars[key].get()
-                        _logger.debug(f"_apply_all_settings: target_fps in DoubleVar after set: {val_in_doublevar}, Type: {type(val_in_doublevar)}")
-                except tk.TclError:
-                     _logger.warning(f"Warning: Could not set value for setting '{key}' to '{value_from_json}'. Skipping.")
-            else:
-                _logger.warning(f"Warning: Unknown setting '{key}' found in settings file. Ignoring.")
-        if hasattr(self, 'process_as_segments_var'):
-            self.toggle_merge_related_options_active_state()
-        # Removed update GUI verbosity
 
-    def _apply_theme(self, is_startup: bool = False):
-        """Applies the selected theme (dark or light) to the GUI."""
-        
-        if not THEMEDTK_AVAILABLE:
-            # ...
-            return
-        
-        # --- Core Theme Application (Must happen before detailed styling) ---
-        if self.dark_mode_var.get():
-            colors = DARK_MODE_COLORS
-            theme_name = colors["theme_name"]
-        else:
-            colors = LIGHT_MODE_COLORS
-            theme_name = colors["theme_name"]
-
-        self.current_theme_colors = colors
-        
-        if THEMEDTK_AVAILABLE:
-             # Apply the theme first
-             self.root.set_theme(theme_name) 
-
-        # --- Detailed TEntry/TCombobox Styling (Apply to CURRENT Theme) ---
-        # NOTE: We use style.map() for backgrounds to override theme defaults
-        entry_bg = colors["entry_bg"]
-        entry_fg = colors["fg"]
-        
-        # 1. TEntry Styling
-        self.style.configure("TEntry", foreground=entry_fg, insertcolor=entry_fg)
-        # Use map to force the fieldbackground for the default state (empty tuple)
-        self.style.map('TEntry', 
-                       fieldbackground=[('', entry_bg)], # '' is the default state
-                       foreground=[('', entry_fg)])
-        
-        # 2. TCombobox Styling
-        self.style.configure("TCombobox", foreground=entry_fg) 
-        self.style.map('TCombobox', 
-                       fieldbackground=[('readonly', entry_bg)], 
-                       foreground=[('readonly', entry_fg)])
-
-
-        # --- Manual Coloring for raw TK Menu ---
-        root_bg_color = colors["bg"]
-        root_fg_color = colors["fg"]
-        menu_active_bg = "#555555" if self.dark_mode_var.get() else "#dddddd"
-        menu_active_fg = "white" if self.dark_mode_var.get() else "black"
-
-        self.root.config(bg=root_bg_color)
-        
-        # NOTE: Since the widgets are now ttk, this is mainly for the root frame and menu
-        if hasattr(self, 'menubar'): 
-            # Menubar and Menus are raw tk.Menu and need manual color
-            self.menubar.config(bg=root_bg_color, fg=root_fg_color, activebackground=menu_active_bg, activeforeground=menu_active_fg)
-            if hasattr(self, 'file_menu'): self.file_menu.config(bg=root_bg_color, fg=root_fg_color)
-            if hasattr(self, 'help_menu'): self.help_menu.config(bg=root_bg_color, fg=root_fg_color)
-           
-        self.root.update_idletasks()
-    
-    def _cleanup_segment_folder(self, segment_subfolder_path, original_basename, master_meta):
-        del_folder = False
-        if not self.keep_intermediate_npz_var.get():
-            _logger.debug(f"Deleting intermediate segment subfolder for {original_basename} (Keep NPZ unchecked)...")
-            del_folder = True
-        else:
-            min_frames = self.min_frames_to_keep_npz_var.get()
-            if min_frames > 0:
-                orig_frames = master_meta.get("original_video_details", {}).get("raw_frame_count", 0)
-                if orig_frames < min_frames:
-                    _logger.info(f"  Video frames ({orig_frames}) < threshold ({min_frames}). Deleting segment folder for {original_basename} despite 'Keep NPZ'.")
-                    del_folder = True
-                else:
-                    _logger.info(f"  Video frames ({orig_frames}) >= threshold ({min_frames}). Segment folder for {original_basename} will be kept.")
-            else:
-                _logger.info(f"Keeping intermediate NPZ files for {original_basename} (Keep NPZ checked, no positive frame threshold).")
-        if del_folder:
-            if os.path.exists(segment_subfolder_path):
-                try: 
-                    shutil.rmtree(segment_subfolder_path)
-                    _logger.debug(f"Successfully deleted segment subfolder for {original_basename}.")
-                except Exception as e:
-                    _logger.error(f"  Error deleting segment subfolder {segment_subfolder_path}: {e}")
-            else:
-                _logger.warning(f"  Segment subfolder not found for deletion: {segment_subfolder_path}")
-        else:
-            _logger.info(f"Keeping intermediate NPZ files and _master_meta.json in {segment_subfolder_path}")
-
-    def _collect_all_settings(self) -> dict:
-        settings_data = {}
-        for key, tk_var in self.all_tk_vars.items():
-            try:
-                value = tk_var.get()
-                settings_data[key] = value
-                if key == "target_fps": # Specific debug for target_fps
-                    _logger.debug(f"_collect_all_settings: target_fps raw value: {value}, type: {type(value)}")
-            except tk.TclError:
-                _logger.warning(f"Warning: Could not get value for setting '{key}'. Skipping.")
-        return settings_data
-
-    def _create_menubar(self):
-        self.menubar = tk.Menu(self.root)
-        self.root.config(menu=self.menubar)
-
-        self.file_menu = tk.Menu(self.menubar, tearoff=0)
-        self.menubar.add_cascade(label="File", menu=self.file_menu)
-        self.file_menu.add_command(label="Load Settings...", command=self._load_all_settings)
-        self.file_menu.add_command(label="Save Settings As...", command=self._save_all_settings_as)
-        self.file_menu.add_command(label="Reset Settings to Default", command=self._reset_settings_to_defaults)
-        self.file_menu.add_separator()
-        self.file_menu.add_command(label="Restore Finished Input Files...", command=lambda: self._restore_input_files(folder_type="finished"))
-        self.file_menu.add_command(label="Restore Failed Input Files...", command=lambda: self._restore_input_files(folder_type="failed"))
-        self.file_menu.add_separator()
-        self.file_menu.add_checkbutton(label="Use Local Models Only", variable=self.use_local_models_only_var, onvalue=True, offvalue=False)
-        self.file_menu.add_checkbutton(label="Disable xFormers (VRAM Save)", variable=self.disable_xformers_var, onvalue=True, offvalue=False)
-        if THEMEDTK_AVAILABLE:
-            self.file_menu.add_checkbutton(label="Dark Mode", variable=self.dark_mode_var, command=self._apply_theme)
-        self.file_menu.add_separator()
-        self.file_menu.add_command(label="Exit", command=self.on_close)
-
-        self.help_menu = tk.Menu(self.menubar, tearoff=0)
-        self.menubar.add_cascade(label="Help", menu=self.help_menu)
-        self.help_menu.add_command(label="GUI Overview", command=lambda: self._show_help_for("general_gui_overview"))
-        # --- ADD THIS CHECKBUTTON TO HELP MENU ---
-        self.help_menu.add_separator() # Optional separator for clarity
-        self.help_menu.add_checkbutton(label="Enable Debug Logging", variable=self.debug_logging_enabled, command=self._toggle_debug_logging)
-        # -----------------------------------------
-
-    def _determine_input_mode_from_path(self, path_str: str) -> Tuple[str, bool]:
-        """
-        Analyzes a path string and determines the input mode and if it's a single source.
-        Returns: (input_mode_str, is_single_source_bool)
-        """
-        if not path_str or not os.path.exists(path_str):
-            _logger.warning(f"GUI Input: Path '{path_str}' is invalid or does not exist. Cannot determine input mode accurately.")
-            return "batch_folder", False
-
-        is_single_source = False
-        mode = "batch_folder"
-
-        if os.path.isfile(path_str):
-            is_single_source = True
-            ext = os.path.splitext(path_str)[1].lower()
-            is_video = any(ext in vid_ext.replace("*", "") for vid_ext in self.VIDEO_EXTENSIONS)
-            is_image = any(ext in img_ext.replace("*", "") for img_ext in self.IMAGE_EXTENSIONS)
-
-            if is_video:
-                mode = "single_video_file"
-            elif is_image:
-                mode = "single_image_file"
-            else:
-                _logger.warning(f"GUI Input: Typed path '{path_str}' is a file of unknown type. Treating as non-single source (batch fallback).")
-                mode = "batch_folder"
-                is_single_source = False
-        elif os.path.isdir(path_str):
-            if self._is_image_sequence_folder(path_str):
-                mode = "image_sequence_folder"
-                is_single_source = True
-            else:
-                mode = "batch_folder"
-                is_single_source = False
-        else:
-            _logger.warning(f"GUI Input: Path '{path_str}' exists but is not a regular file or directory.")
-            mode = "batch_folder"
-            is_single_source = False
-            
-        _logger.debug(f"GUI Input: Determined mode for path '{path_str}' as '{mode}', is_single_source: {is_single_source}.")
-        return mode, is_single_source
-
-    def _determine_video_paths_and_processing_mode(self, original_basename, master_meta_for_this_vid):
-        main_output_dir_for_video = self.output_dir.get()
-        was_processed_as_segments = master_meta_for_this_vid["global_processing_settings"]["processed_as_segments"]
-        segment_subfolder_path = None
-        if was_processed_as_segments:
-            segment_subfolder_name = get_segment_output_folder_name(original_basename)
-            segment_subfolder_path = os.path.join(main_output_dir_for_video, segment_subfolder_name)
-        return main_output_dir_for_video, segment_subfolder_path, was_processed_as_segments
-
-    def _execute_re_merge_wrapper(self, remerge_args_dict):
-        try: self._execute_re_merge(remerge_args_dict)
-        finally: self.message_queue.put(("set_ui_state", False))
-
-    def _execute_re_merge(self, remerge_args_dict):
-        self.stop_event.clear(); self.progress["value"] = 0; self.progress["maximum"] = 1
-        start_time = time.perf_counter()
-        primary_output_path = "N/A (Merge Failed)" # Initialize to ensure it's always defined
-        try:
-            if merge_depth_segments:
-                primary_output_path = merge_depth_segments.merge_depth_segments(**remerge_args_dict)
-                if primary_output_path:
-                    _logger.info(f"Re-Merge completed. Primary output saved to: {primary_output_path}")
-                else:
-                    _logger.warning("Re-Merge completed, but no primary output path was returned.")
-            else: 
-                _logger.warning("Segment merging for N/A for re-merge action skipped: merge_depth_segments module not available.")
-        except Exception as e:
-            _logger.exception(f"ERROR during re-merge execution: {e}")
-            self.status_message_var.set(f"Re-Merge Error: {e.__class__.__name__}") # Update GUI status
-        finally:
-            duration = format_duration(time.perf_counter() - start_time)
-            _logger.info(f"--- Re-Merge for: {os.path.basename(remerge_args_dict['master_meta_path'])} finished in {duration}. ---")
-            # If a primary output path was generated, show it in status for better feedback
-            if primary_output_path and primary_output_path != "N/A (Merge Failed)":
-                self.status_message_var.set(f"Re-Merge Finished. Output: {os.path.basename(primary_output_path)}")
-            else:
-                self.status_message_var.set("Re-Merge Finished (No primary output).")
-            self.message_queue.put(("progress", 1))
-
-    def _execute_generate_segment_visuals_wrapper(self, gen_visual_args_dict):
-        try: self._execute_generate_segment_visuals(gen_visual_args_dict)
-        finally: self.message_queue.put(("set_ui_state", False))
-
-    def _execute_generate_segment_visuals(self, gen_visual_args_dict):
-        self.stop_event.clear(); self.progress["value"] = 0
-        master_path = gen_visual_args_dict["master_meta_path"]
-        vis_fmt = gen_visual_args_dict["visual_format_to_generate"]
-        start_time = time.perf_counter()
-        
-        meta_data = load_json_file(master_path) 
-        if not meta_data: return 
-        
-        jobs = [j for j in meta_data.get("jobs_info", []) if j.get("status") == "success" and j.get("output_segment_filename")]
-        if not jobs: 
-            _logger.warning(f"No successful segments with output filenames found in {os.path.basename(master_path)} for visual generation.")
-            return
-        self.progress["maximum"] = len(jobs)
-        seg_folder_path = os.path.dirname(master_path)
-        updated_visual_paths = {}
-
-        for i, job_meta in enumerate(jobs):
-            if self.stop_event.is_set(): 
-                _logger.info("Segment visual generation cancelled during processing.")
-                break
-            seg_id, npz_name = job_meta.get("segment_id"), job_meta.get("output_segment_filename")
-            npz_path = os.path.join(seg_folder_path, npz_name)
-            _logger.debug(f"  Visual Gen - Processing segment {seg_id + 1 if seg_id is not None else '?'}/{len(jobs)}: {npz_name} for {vis_fmt}") 
-            
-            if not os.path.exists(npz_path): 
-                _logger.error(f"File not found: {npz_path}")
-                continue
-            try:
-                with np.load(npz_path) as data:
-                    if 'frames' not in data.files: 
-                        _logger.error(f"Key 'frames' not found in NPZ: {npz_name}")
-                        continue
-                    raw_frames = data['frames']
-                if raw_frames.size == 0: 
-                    _logger.warning(f"    Visual Gen - WARNING: Segment {npz_name} is empty. Skipping.")
-                    continue
-                
-                norm_frames = (raw_frames - raw_frames.min()) / (raw_frames.max() - raw_frames.min()) if raw_frames.max() != raw_frames.min() else np.zeros_like(raw_frames)
-                norm_frames = np.clip(norm_frames, 0, 1)
-                base_name_no_ext = os.path.splitext(npz_name)[0]
-                save_path, save_err = None, None
-                fps = float(job_meta.get("processed_at_fps", meta_data.get("original_video_details", {}).get("original_fps", 30.0)))
-                if fps <= 0: fps = 30.0
-
-                if vis_fmt == "mp4" or vis_fmt == "main10_mp4":
-                    save_path, save_err = save_depth_visual_as_mp4_util(
-                        norm_frames, 
-                        os.path.join(seg_folder_path, f"{base_name_no_ext}_visual.mp4"),
-                        fps,
-                        output_format=vis_fmt
-                    )
-                elif vis_fmt == "png_sequence":
-                    save_path, save_err = save_depth_visual_as_png_sequence_util(norm_frames, seg_folder_path, base_name_no_ext)
-                elif vis_fmt == "exr_sequence":
-                     if OPENEXR_AVAILABLE_GUI: save_path, save_err = save_depth_visual_as_exr_sequence_util(norm_frames, seg_folder_path, base_name_no_ext)
-                     else: save_err = "OpenEXR module not available in GUI environment."
-                elif vis_fmt == "exr":
-                    if OPENEXR_AVAILABLE_GUI:
-                        first_frame = norm_frames[0] if len(norm_frames) > 0 else None
-                        if first_frame is None: save_err = "No frame data for single EXR."
-                        else: save_path, save_err = save_depth_visual_as_single_exr_util(first_frame, seg_folder_path, base_name_no_ext)
-                    else: save_err = "OpenEXR module not available in GUI environment."
-
-                if save_path:
-                    _logger.debug(f"    Visual Gen - Successfully saved visual: {save_path}") 
-                    if seg_id is not None: updated_visual_paths[seg_id] = {"path": os.path.abspath(save_path), "format": vis_fmt}
-                if save_err: 
-                    _logger.error(f"    Visual Gen - ERROR saving visual for {npz_name}: {save_err}, format requested: {vis_fmt}") 
-            except Exception as e:
-                _logger.exception(f"    Visual Gen - ERROR processing segment {npz_name}: {e}") 
-            self.message_queue.put(("progress", i + 1))
-        
-        if updated_visual_paths:
-            _logger.info("Visual Gen - Updating master metadata with new visual paths...")
-            meta_content_update = load_json_file(master_path)
-            if meta_content_update:
-                updated_count = 0
-                for job_entry in meta_content_update.get("jobs_info", []):
-                    s_id = job_entry.get("segment_id")
-                    if s_id in updated_visual_paths:
-                        job_entry["intermediate_visual_path"] = updated_visual_paths[s_id]["path"]
-                        job_entry["intermediate_visual_format_saved"] = updated_visual_paths[s_id]["format"]
-                        updated_count +=1
-                if updated_count > 0:
-                    if save_json_file(meta_content_update, master_path, indent=4):
-                         _logger.info(f"Visual Gen - Master metadata updated for {updated_count} segments.")
-                else: _logger.info("Visual Gen - No segments in master metadata needed visual path updates.")
-        
-        duration = format_duration(time.perf_counter() - start_time)
-        _logger.info(f"--- Segment Visual Generation for: {os.path.basename(master_path)} (Format: {vis_fmt}) finished in {duration}. ---")
-        self.message_queue.put(("progress", len(jobs)))
-
-    def _finalize_video_processing(self, current_video_path, original_basename, master_meta_for_this_vid):
-        if master_meta_for_this_vid["completed_failed_jobs"] == 0:
-            master_meta_for_this_vid["overall_status"] = "all_success"
-        elif master_meta_for_this_vid["completed_successful_jobs"] > 0:
-            master_meta_for_this_vid["overall_status"] = "partial_success"
-        else:
-            master_meta_for_this_vid["overall_status"] = "all_failed"
-
-        _logger.info(f"Finished processing for {original_basename}. Overall Status: {master_meta_for_this_vid['overall_status']}.")
-        
-        main_output_dir, segment_subfolder_path, was_segments = self._determine_video_paths_and_processing_mode(original_basename, master_meta_for_this_vid)
-        master_meta_filepath, meta_saved = None, False
-        # --- FIX: Initialize merge_success and final_merged_path BEFORE conditional assignment ---
-        merge_success, final_merged_path = False, "N/A (Merge not applicable or failed)"
-        
-        try:
-            master_meta_filepath, meta_saved = self._save_master_metadata_and_cleanup_segment_json(master_meta_for_this_vid, original_basename, main_output_dir, was_segments, segment_subfolder_path)
-            
-            if was_segments and meta_saved and master_meta_for_this_vid["overall_status"] in ["all_success", "partial_success"]:
-                try: # Nested try-except to catch errors specifically from merging
-                    merge_success, final_merged_path = self._handle_segment_merging(master_meta_filepath, original_basename, main_output_dir, master_meta_for_this_vid)
-                except Exception as e_merge:
-                    _logger.error(f"Error during segment merging for {original_basename}: {e_merge}", exc_info=True)
-                    self.status_message_var.set(f"Merge Failed: {e_merge.__class__.__name__}")
-                    merge_success, final_merged_path = False, f"N/A (Merge failed due to {e_merge.__class__.__name__})"
-            elif was_segments:
-                # If segments were processed but not merged (e.g., all_failed status, or no successful segments)
-                _logger.debug(f"Skipping merge for {original_basename} (status: {master_meta_for_this_vid['overall_status']}, meta_saved: {meta_saved}). Segments remain in {segment_subfolder_path or 'N/A'}")
-                # No change to merge_success/final_merged_path as they were initialized to False/N/A
-            
-            if self.save_final_output_json_var.get():
-                self._save_final_output_sidecar_json(original_basename, final_merged_path, master_meta_filepath, master_meta_for_this_vid, was_segments, merge_success)
-            
-            if was_segments and segment_subfolder_path:
-                self._cleanup_segment_folder(segment_subfolder_path, original_basename, master_meta_for_this_vid)
-        except Exception as e:
-            _logger.exception(f"Error during finalization for {original_basename}: {e}")
-            self.status_message_var.set(f"Finalization Error: {e.__class__.__name__} for {original_basename}")
-
-        final_status = master_meta_for_this_vid.get("overall_status", "all_failed")
-
-        if self.effective_move_original_on_completion:
-            target_subfolder_name = ""
-            if final_status == "all_success":
-                target_subfolder_name = "finished"
-            elif final_status in ["partial_success", "all_failed"]:
-                target_subfolder_name = "failed"
-            else:
-                _logger.warning(f"Move Original: Could not determine 'finished' or 'failed' status for '{original_basename}' (status: '{final_status}'). Original file will not be moved.")
-
-            if target_subfolder_name:
-                self._move_original_source(current_video_path, original_basename, target_subfolder_name)
-        else:
-            _logger.info(f"Skipped moving original source '{original_basename}' (single file/sequence mode).")
-
-    def _get_segments_to_resume_or_overwrite(self, vid_path, original_basename, 
-                                             segment_subfolder_path, all_potential_segments_from_define,
-                                             base_job_info_for_video_ref: dict):
-        master_meta_path = os.path.join(segment_subfolder_path, f"{original_basename}_master_meta.json")
-        base_job_info_for_video_ref["pre_existing_successful_jobs"] = []
-
-        if os.path.exists(master_meta_path):
-            msg_dialog = (f"Master metadata found for '{original_basename}'. This video was previously processed/finalized.\n"
-                          f"Path: {master_meta_path}\n\n"
-                          f"Do you want to:\n"
-                          f"- 'Yes': Re-process only FAILED segments and update master metadata?\n"
-                          f"         (Existing successful segments will be preserved in the new master metadata).\n"
-                          f"- 'No': Delete ALL existing segments and master metadata and start fresh?\n"
-                          f"- 'Cancel': Skip this video entirely?")
-            choice = messagebox.askyesnocancel("Resume or Overwrite Finalized Segments?", msg_dialog, parent=self.root)
-
-            if choice is True:
-                _logger.info(f"Attempting to re-process failed segments for {original_basename} based on existing master metadata.")
-                master_data = load_json_file(master_meta_path)
-                if not master_data or "jobs_info" not in master_data:
-                    _logger.warning(f"Could not load master metadata or 'jobs_info' missing for {original_basename}. Defaulting to overwrite.")
-                    choice = False # Fallthrough
-                else:
-                    failed_segment_jobs_to_run = []
-                    successful_jobs_from_old_master = []
-                    potential_segments_dict = {seg_job['segment_id']: seg_job for seg_job in all_potential_segments_from_define}
-
-                    for job_in_meta in master_data.get("jobs_info", []):
-                        seg_id = job_in_meta.get("segment_id")
-                        if job_in_meta.get("status") == "success":
-                            successful_jobs_from_old_master.append(job_in_meta)
-                        elif seg_id is not None and seg_id in potential_segments_dict:
-                            failed_segment_jobs_to_run.append(potential_segments_dict[seg_id])
-                            _logger.debug(f"  Queueing segment ID {seg_id} (status: {job_in_meta.get('status', 'unknown')}) for {original_basename} for re-processing.")
-                        else:
-                            _logger.warning(f"  Warning: Segment (ID: {seg_id}, Status: {job_in_meta.get('status')}) from master_meta for {original_basename} not re-queueable. It will be ignored.")
-                    
-                    if not failed_segment_jobs_to_run:
-                        _logger.info(f"No re-processable failed segments found in master_meta for {original_basename}. All existing successful segments will be preserved if merging.")
-                        base_job_info_for_video_ref["pre_existing_successful_jobs"] = successful_jobs_from_old_master
-                        return [], "skipped_no_failed_segments_in_master_for_reprocessing"
-                    
-                    try:
-                        backup_master_meta_path = master_meta_path + f".backup_{time.strftime('%Y%m%d%H%M%S')}"
-                        shutil.move(master_meta_path, backup_master_meta_path)
-                        _logger.debug(f"Backed up existing file {os.path.basename(master_meta_path)} to: {os.path.basename(backup_master_meta_path)}")
-                    except Exception as e:
-                        _logger.warning(f"  Warning: Could not back up existing master metadata: {e}. It might be overwritten.")
-
-                    base_job_info_for_video_ref["pre_existing_successful_jobs"] = successful_jobs_from_old_master
-                    return failed_segment_jobs_to_run, "reprocessing_failed_from_master"
-            
-            if choice is False: 
-                _logger.info(f"User chose/defaulted to delete existing segment folder and start fresh for {original_basename}: {segment_subfolder_path}")
-                try:
-                    if os.path.exists(segment_subfolder_path): shutil.rmtree(segment_subfolder_path)
-                    _logger.debug(f"  Successfully deleted: {segment_subfolder_path}")
-                except Exception as e:
-                    _logger.error(f"  Error deleting {segment_subfolder_path}: {e}. Processing may fail or overwrite.")
-                return all_potential_segments_from_define, "overwriting_finalized"
-            
-            else: # Cancel
-                _logger.info(f"Skipping {original_basename} (user chose to cancel on finalized segments).")
-                return [], "skipped_finalized"
-
-        elif os.path.exists(segment_subfolder_path):
-            msg_dialog_incomplete = (f"Incomplete segment data found for '{original_basename}' (no master metadata file).\n"
-                                     f"Path: {segment_subfolder_path}\n\n"
-                                     f"Do you want to:\n"
-                                     f"- 'Yes': Resume by processing only missing/failed segments?\n"
-                                     f"         (Existing successful segments will be preserved).\n"
-                                     f"- 'No': Delete existing incomplete segments and start fresh?\n"
-                                     f"- 'Cancel': Skip this video entirely?")
-            choice_incomplete = messagebox.askyesnocancel("Resume Incomplete Segments?", msg_dialog_incomplete, parent=self.root)
-
-            if choice_incomplete is True:
-                _logger.info(f"Attempting to resume incomplete segments for {original_basename}.")
-                segments_to_run = []
-                num_already_complete = 0
-                completed_segment_metadata_from_json = []
-
-                for potential_segment_job in all_potential_segments_from_define:
-                    seg_id = potential_segment_job["segment_id"]
-                    total_segs = potential_segment_job["total_segments"]
-                    expected_npz_filename = get_segment_npz_output_filename(original_basename, seg_id, total_segs)
-                    expected_json_filename = get_sidecar_json_filename(expected_npz_filename)
-                    npz_path = os.path.join(segment_subfolder_path, expected_npz_filename)
-                    json_path = os.path.join(segment_subfolder_path, expected_json_filename)
-
-                    is_complete_and_successful = False
-                    if os.path.exists(npz_path) and os.path.exists(json_path):
-                        segment_meta = load_json_file(json_path)
-                        if segment_meta and segment_meta.get("status") == "success":
-                            is_complete_and_successful = True
-                            num_already_complete += 1
-                            completed_segment_metadata_from_json.append(segment_meta)
-                        else:
-                            status_msg = segment_meta.get('status', 'unknown') if segment_meta else 'JSON missing/corrupt'
-                            _logger.info(f"  Segment {seg_id+1}/{total_segs} for {original_basename} found but not successful (status: {status_msg}). Will re-process.")
-                    else:
-                        _logger.debug(f"  Segment {seg_id+1}/{total_segs} for {original_basename} (NPZ: {expected_npz_filename}) not found or JSON missing. Will process.")
-
-                    if not is_complete_and_successful:
-                        segments_to_run.append(potential_segment_job)
-                
-                if num_already_complete > 0:
-                    _logger.info(f"Found {num_already_complete} successfully completed segments for {original_basename} that will be skipped during processing.")
-                
-                base_job_info_for_video_ref["pre_existing_successful_jobs"] = completed_segment_metadata_from_json
-
-                if not segments_to_run and num_already_complete == len(all_potential_segments_from_define):
-                    _logger.warning(f"  All segments for {original_basename} appear complete from individual files, but master_meta was missing. Consider re-merging. Skipping processing.")
-                    return [], "skipped_all_segments_found_complete_no_master"
-                elif not segments_to_run and num_already_complete < len(all_potential_segments_from_define):
-                     _logger.warning(f"  No segments to run for {original_basename}, but not all were found complete. Total defined: {len(all_potential_segments_from_define)}, Found complete: {num_already_complete}")
-                     return [], "skipped_no_segments_to_run_incomplete"
-                return segments_to_run, "resuming_incomplete"
-
-            elif choice_incomplete is False:
-                _logger.info(f"User chose to delete existing incomplete segment folder and start fresh for {original_basename}: {segment_subfolder_path}")
-                try:
-                    if os.path.exists(segment_subfolder_path): shutil.rmtree(segment_subfolder_path)
-                    _logger.debug(f"  Successfully deleted: {segment_subfolder_path}")
-                except Exception as e:
-                    _logger.error(f"  Error deleting {segment_subfolder_path}: {e}. Processing may fail or overwrite.")
-                return all_potential_segments_from_define, "overwriting_incomplete"
-            
-            else: # Cancel
-                _logger.info(f"Skipping {original_basename} (user chose to cancel on incomplete segments).")
-                return [], "skipped_incomplete"
-                
-        else: # Segment folder does not exist
-            return all_potential_segments_from_define, "fresh_processing"
-
-    def _handle_segment_merging(self, master_meta_filepath, original_basename, main_output_dir, master_meta) -> Tuple[bool, str]:
-        """
-        Handles the merging of segments, potentially generating a second robustly normalized output.
-        Returns a tuple: (bool indicating merge success, str path of the primary merged output).
-        """
-        if not merge_depth_segments:
-            _logger.warning(f"Segment merging for {original_basename} skipped: merge_depth_segments module not available.")
-            return False, "N/A (Merge module not available - module missing)"
-        
-        out_fmt = self.merge_output_format_var.get()
-        output_suffix = self.merge_output_suffix_var.get()
-        merged_base_name = f"{original_basename}{output_suffix}"
-
-        align_method = "linear_blend" if self.merge_alignment_method_var.get() == "Linear Blend" else "shift_scale"
-        
-        enable_dual_output = self.enable_dual_output_robust_norm.get() 
-        robust_low_perc = self.robust_norm_low_percentile.get()
-        robust_high_perc = self.robust_norm_high_percentile.get()
-        robust_output_min = self.robust_norm_output_min.get()
-        robust_output_max = self.robust_norm_output_max.get()
-        robust_output_suffix_val = self.robust_output_suffix.get()
-        is_depth_far_black_val = self.is_depth_far_black.get()
-
-        try:
-            primary_output_path = merge_depth_segments.merge_depth_segments(
-                master_meta_path=master_meta_filepath, 
-                output_path_arg=main_output_dir,
-                do_dithering=self.merge_dither_var.get(), 
-                dither_strength_factor=self.merge_dither_strength_var.get(),
-                apply_gamma_correction=self.merge_gamma_correct_var.get(), 
-                gamma_value=self.merge_gamma_value_var.get(),
-                use_percentile_norm=self.merge_percentile_norm_var.get(), 
-                norm_low_percentile=self.merge_norm_low_perc_var.get(),
-                norm_high_percentile=self.merge_norm_high_perc_var.get(), 
-                output_format=out_fmt,
-                merge_alignment_method=align_method, 
-                output_filename_override_base=merged_base_name,
-                enable_dual_output_robust_norm=enable_dual_output,
-                robust_norm_low_percentile=robust_low_perc,
-                robust_norm_high_percentile=robust_high_perc,
-                robust_norm_output_min=robust_output_min,
-                robust_norm_output_max=robust_output_max,
-                robust_output_suffix=robust_output_suffix_val,
-                is_depth_far_black=is_depth_far_black_val
-            )
-            
-            # If primary_output_path is None, the merge failed or didn't produce a path
-            if primary_output_path is None:
-                _logger.error(f"merge_depth_segments returned None for {original_basename}. Merge considered failed.")
-                return False, f"N/A (Merge module returned no path)"
-            else:
-                _logger.info(f"Primary merge for {original_basename} successful. Output: {primary_output_path}")
-                return True, primary_output_path # Successful merge
-                
-        except Exception as e: 
-            _logger.exception(f"Exception during merge_depth_segments call for {original_basename}: {e}")
-            self.status_message_var.set(f"Merge Error: {e.__class__.__name__} for {original_basename}")
-            return False, f"N/A (Merge failed due to {e.__class__.__name__})"
-        
-    def _initialize_master_metadata_entry(self, original_basename, job_info_for_original_details, total_expected_jobs_for_this_video):
-        entry = {
-            "original_video_basename": original_basename,
-            "original_video_details": {
-                "raw_frame_count": job_info_for_original_details.get("original_video_raw_frame_count", 0),
-                "original_fps": job_info_for_original_details.get("original_video_fps", 30.0)
-            },
-            "global_processing_settings": {
-                "guidance_scale": self.guidance_scale.get(),
-                "inference_steps": self.inference_steps.get(),
-                "target_height_setting": self.target_height.get(),
-                "target_width_setting": self.target_width.get(),
-                "seed_setting": self.seed.get(),
-                "target_fps_setting": self.target_fps.get(),
-                "process_max_frames_setting": self.process_length.get(),
-                "gui_window_size_setting": self.window_size.get(),
-                "gui_overlap_setting": self.overlap.get(),
-                "processed_as_segments": self.process_as_segments_var.get(),
-            },
-            "jobs_info": [], "overall_status": "pending",
-            "total_expected_jobs": total_expected_jobs_for_this_video,
-            "completed_successful_jobs": 0, "completed_failed_jobs": 0,
-        }
-        if self.process_as_segments_var.get():
-            entry["global_processing_settings"]["segment_definition_output_window_frames"] = job_info_for_original_details.get("gui_desired_output_window_frames")
-            entry["global_processing_settings"]["segment_definition_output_overlap_frames"] = job_info_for_original_details.get("gui_desired_output_overlap_frames")
-        return entry
-
-    def _is_image_sequence_folder(self, folder_path: str) -> bool:
-        """Rudimentary check if a folder looks like an image sequence."""
-        if not os.path.isdir(folder_path): return False
-        
-        image_files_count = 0
-        video_files_count = 0
-        sub_dirs_count = 0
-
-        for item in os.listdir(folder_path):
-            item_path = os.path.join(folder_path, item)
-            if os.path.isdir(item_path):
-                sub_dirs_count += 1
-                continue
-            
-            ext = os.path.splitext(item)[1].lower()
-            if any(ext in img_ext.replace("*", "") for img_ext in self.IMAGE_EXTENSIONS):
-                image_files_count +=1
-            elif any(ext in vid_ext.replace("*", "") for vid_ext in self.VIDEO_EXTENSIONS):
-                video_files_count +=1
-        
-        return image_files_count > 5 and video_files_count == 0 and sub_dirs_count == 0
-
-    def _load_help_content(self):
-        if self._help_data is None: # Only load once
-            raw_data = load_json_file(DepthCrafterGUI.HELP_CONTENT_FILENAME)
-            if raw_data:
-                self._help_data = raw_data # Keep raw data for future potential uses
-                # Populate the module-level _HELP_TEXTS dictionary for tooltips
-                global _HELP_TEXTS
-                _HELP_TEXTS.clear() # Clear existing in case of reload (e.g., in future)
-                for key, content in raw_data.items():
-                    if "text" in content: # Ensure 'text' key exists
-                        _HELP_TEXTS[key] = content["text"]
-            else:
-                self._help_data = {} # Indicate loading failed
-                _logger.warning(f"Warning: Could not load help content from {DepthCrafterGUI.HELP_CONTENT_FILENAME}. Tooltips will be limited/show 'not found'.")
-        return self._help_data
-
-    def _load_all_settings(self):
-        filepath = filedialog.askopenfilename(title="Load Settings File", filetypes=self.SETTINGS_FILETYPES, initialdir=self.last_settings_dir)
-        if not filepath:
-            _logger.info("Load settings cancelled by user.")
-            return
-        self.last_settings_dir = os.path.dirname(filepath)
-        settings_data = load_json_file(filepath)
-        if settings_data:
-            self._apply_all_settings(settings_data)
-            _logger.info(f"Successfully loaded settings from: {filepath}")
-        else:
-            messagebox.showerror("Load Error", f"Could not load settings from:\n{filepath}\nSee console log for details.")
-
-    def _move_original_source(self, current_video_path: str, original_basename: str, target_subfolder: str):
-        _logger.info(f"Moving original source '{original_basename}' to '{target_subfolder}' folder.")
-        try:
-            path_from_gui_input_field = self.input_dir_or_file_var.get()
-
-            actual_input_root_for_target_folder: str
-            if os.path.isdir(path_from_gui_input_field):
-                actual_input_root_for_target_folder = path_from_gui_input_field
-            elif os.path.isfile(path_from_gui_input_field):
-                actual_input_root_for_target_folder = os.path.dirname(path_from_gui_input_field)
-            else:
-                _logger.warning(f"Move Original: The GUI input path '{path_from_gui_input_field}' is invalid for determining the target folder root. Using dirname of processed item as fallback.")
-                actual_input_root_for_target_folder = os.path.dirname(current_video_path)
-                if not os.path.isdir(actual_input_root_for_target_folder):
-                    _logger.error(f"Move Original: Cannot determine a valid root directory for target folder based on input path '{current_video_path}'.")
-                    _logger.error(f"ERROR moving original '{original_basename}': Cannot determine valid root for target folder.")
-                    return
-
-            destination_dir = os.path.join(actual_input_root_for_target_folder, target_subfolder)
-            os.makedirs(destination_dir, exist_ok=True)
-            
-            dest_filename = os.path.basename(current_video_path)
-            dest_path = os.path.join(destination_dir, dest_filename)
-
-            if os.path.exists(current_video_path):
-                if os.path.exists(dest_path):
-                    base, ext = os.path.splitext(dest_filename) 
-                    new_dest_name = f"{base}{time.strftime('_%Y%m%d%H%M%S')}{ext}"
-                    dest_path = os.path.join(destination_dir, new_dest_name)
-                    _logger.info(f"Move Original: Destination already exists. Renaming '{dest_filename}' to '{new_dest_name}'.")
-                
-                shutil.move(current_video_path, dest_path)
-                _logger.debug(f"Successfully moved original source '{dest_filename}' to '{target_subfolder}' folder.")
-            else:
-                _logger.warning(f"Move Original: Source path to move does not exist: {current_video_path}")
-        except Exception as e:
-            _logger.exception(f"ERROR moving original '{original_basename}': {e}")
-
-    def _process_single_job(self, demo, job_info, master_meta_for_this_vid):
-        
-        returned_job_specific_metadata = {}
-        job_successful = False
-        is_segment_job = job_info.get("is_segment", False)
-        original_basename = job_info["original_basename"]
-        
-        snapshotted_settings = master_meta_for_this_vid["global_processing_settings"]
-        guidance_scale_for_job = snapshotted_settings["guidance_scale"]
-        inference_steps_for_job = snapshotted_settings["inference_steps"]
-        seed_for_job = snapshotted_settings["seed_setting"]
-        process_length_for_run_param = snapshotted_settings["process_max_frames_setting"] if not is_segment_job else -1
-        
-        window_size_for_pipe_call = snapshotted_settings["gui_window_size_setting"]
-        overlap_for_pipe_call = snapshotted_settings["gui_overlap_setting"]
-
-        try:
-            keep_npz_for_this_job_run = False
-            if is_segment_job:
-                if self.keep_intermediate_npz_var.get():
-                    min_frames_thresh = self.min_frames_to_keep_npz_var.get()
-                    orig_vid_frame_count = job_info.get("original_video_raw_frame_count", 0)
-                    if min_frames_thresh <= 0 or orig_vid_frame_count >= min_frames_thresh:
-                        keep_npz_for_this_job_run = True
-            
-            saved_data_filepath, returned_job_specific_metadata = demo.run(
-                video_path_or_frames_or_info=job_info,
-                num_denoising_steps=inference_steps_for_job, 
-                guidance_scale=guidance_scale_for_job,
-                base_output_folder=self.output_dir.get(), 
-                gui_window_size=window_size_for_pipe_call,
-                gui_overlap=overlap_for_pipe_call, 
-                process_length_for_read_full_video=process_length_for_run_param, 
-                target_height=self.target_height.get(),
-                target_width=self.target_width.get(),
-                seed=seed_for_job, 
-                original_video_basename_override=original_basename,
-                segment_job_info_param=job_info if is_segment_job else None,
-                keep_intermediate_npz_config=keep_npz_for_this_job_run,
-                intermediate_segment_visual_format_config=self.keep_intermediate_segment_visual_format_var.get(),
-                save_final_json_for_this_job_config=self.save_final_output_json_var.get()
-            )
-            if not returned_job_specific_metadata:
-                returned_job_specific_metadata = {"status": "failure_no_metadata_from_run"}
-                _logger.warning(f"Warning: No job-specific metadata returned from run for {original_basename}.")
-            
-            if saved_data_filepath and returned_job_specific_metadata.get("status") == "success":
-                job_successful = True
-            else:
-                log_msg_prefix_local = f"Segment {job_info.get('segment_id', -1)+1}/{job_info.get('total_segments', 0)}" if is_segment_job else "Full video"
-                _logger.info(f"  Job for {original_basename} ({log_msg_prefix_local}) status: {returned_job_specific_metadata.get('status', 'unknown_status')}")
-        
-        except Exception as e:
-            if not returned_job_specific_metadata: returned_job_specific_metadata = {}
-            returned_job_specific_metadata["status"] = "exception_in_gui_process_single_job"
-            returned_job_specific_metadata["error_message"] = str(e)
-            log_msg_prefix_local = f"Segment {job_info.get('segment_id', -1)+1}/{job_info.get('total_segments', 0)}" if is_segment_job else "Full video"
-            _logger.exception(f"  Exception during job for {original_basename} ({log_msg_prefix_local}): {e}")
-            self.status_message_var.set(f"Error: {e.__class__.__name__} during {original_basename}")
-        return job_successful, returned_job_specific_metadata
-
-    def _recolor_tk_widgets(self, parent, bg_color, fg_color, entry_bg):
-        """Recursively recolors raw tk widgets within a parent container."""
-        for widget in parent.winfo_children():
-            widget_type = widget.winfo_class()
-            try:
-                # Basic widgets that support bg/fg config
-                if widget_type in ('Label', 'Checkbutton'):
-                    widget.config(bg=bg_color, fg=fg_color)
-                elif widget_type == 'Entry':
-                    widget.config(bg=entry_bg, fg=fg_color, insertbackground=fg_color)
-                # Buttons usually look better controlled by the theme/style
-                # elif widget_type == 'Button':
-                #     widget.config(bg=bg_color, fg=fg_color) 
-                # Containers
-                elif widget_type in ('Frame', 'Toplevel', 'Menubutton'):
-                    widget.config(bg=bg_color)
-                # LabelFrame title
-                elif widget_type == 'Labelframe':
-                    widget.config(bg=bg_color, fg=fg_color)
-            except tk.TclError:
-                # Some widgets (like a tk.Text in a Log window, if you had one)
-                # or ttk widgets passed to this function will raise an error. Ignore.
-                pass 
-            
-            # Recurse into children
-            self._recolor_tk_widgets(widget, bg_color, fg_color, entry_bg)
-
-    def _reset_settings_to_defaults(self):
-        if messagebox.askyesno("Reset Settings", "Are you sure you want to reset all settings to their default values?"):
-            self._apply_all_settings(self.initial_default_settings)
-            _logger.info("All settings have been reset to their initial defaults.")
-            self.status_message_var.set("Settings reset to defaults.")
-
-    def _restore_input_files(self, folder_type: str): # Added folder_type argument
-        """Moves original input files from a specified 'finished' or 'failed' subfolder back to their input directory."""
-        display_folder_name = folder_type.capitalize() # "Finished" or "Failed"
-
-        if not messagebox.askyesno(f"Restore {display_folder_name} Input Files", 
-                                   f"Are you sure you want to move original input files from the '{display_folder_name}' subfolder "
-                                   f"back to their original input directory?"):
-            _logger.info(f"Restore {display_folder_name} operation cancelled by user confirmation.")
-            return
-
-        source_input_path = self.input_dir_or_file_var.get()
-
-        if not os.path.isdir(source_input_path):
-            messagebox.showerror("Restore Error", f"Restore '{display_folder_name}' input files operation is only applicable when 'Input Folder/File' is set to a directory (batch mode).")
-            _logger.warning(f"Restore {display_folder_name} operation skipped: Input Folder/File is not a directory: {source_input_path}")
-            self.status_message_var.set(f"Restore {display_folder_name} failed: Input is not a directory.")
-            return
-
-        restored_count = 0
-        errors_count = 0
-        
-        # Only process the specified folder_type
-        finished_source_folder = os.path.join(source_input_path, folder_type) # Use folder_type directly
-        
-        if os.path.isdir(finished_source_folder):
-            _logger.info(f"==> Restoring input files from: {finished_source_folder}")
-            for filename in os.listdir(finished_source_folder):
-                src_path = os.path.join(finished_source_folder, filename)
-                dest_path = os.path.join(source_input_path, filename) 
-                
-                if os.path.isfile(src_path):
-                    try:
-                        if os.path.exists(dest_path):
-                            base, ext = os.path.splitext(filename)
-                            new_filename = f"{base}_restored_{time.strftime('%Y%m%d%H%M%S')}{ext}"
-                            dest_path = os.path.join(source_input_path, new_filename)
-                            _logger.warning(f"Input file '{filename}' already exists in '{source_input_path}'. Restoring as '{new_filename}'.")
-                        
-                        shutil.move(src_path, dest_path)
-                        restored_count += 1
-                        _logger.debug(f"Moved input file '{filename}' to '{source_input_path}'")
-                    except Exception as e:
-                        errors_count += 1
-                        _logger.error(f"Error moving input file '{filename}' from '{finished_source_folder}': {e}", exc_info=True)
-            
-            # Clean up empty folder after restoring
-            try:
-                if not os.listdir(finished_source_folder):
-                    os.rmdir(finished_source_folder)
-                    _logger.info(f"Removed empty folder: {finished_source_folder}")
-            except OSError as e:
-                _logger.warning(f"Could not remove empty folder '{finished_source_folder}': {e}")
-        else:
-            _logger.info(f"==> Input '{display_folder_name}' folder not found: {finished_source_folder}")
-
-
-        # Final status update
-        if restored_count > 0 or errors_count > 0:
-            self.status_message_var.set(f"Restore {display_folder_name} complete: {restored_count} input files moved, {errors_count} errors.")
-            messagebox.showinfo("Restoration Complete", 
-                                f"{display_folder_name} input files restoration attempted.\n"
-                                f"Successfully restored: {restored_count} file(s)\n"
-                                f"Skipped (due to error/conflict): {errors_count} file(s)")
-        else:
-            self.status_message_var.set(f"No {display_folder_name.lower()} input files found to restore.")
-            messagebox.showinfo("Restoration Complete", f"No input files found in the '{display_folder_name}' folder to restore.")
-
-    def _save_all_settings_as(self):
-        filepath = filedialog.asksaveasfilename(title="Save Settings As", filetypes=self.SETTINGS_FILETYPES, defaultextension=".json", initialdir=self.last_settings_dir)
-        if not filepath:
-            _logger.info("Save settings cancelled by user.")
-            return
-        self.last_settings_dir = os.path.dirname(filepath)
-        current_settings = self._collect_all_settings()
-        if save_json_file(current_settings, filepath, indent=4):
-            _logger.info(f"Successfully saved settings to: {filepath}")
-            messagebox.showinfo("Save Successful", f"Settings saved to:\n{filepath}")
-        else:
-            messagebox.showerror("Save Error", f"Could not save settings to:\n{filepath}\nSee console log for details.")
-
-    def _save_final_output_sidecar_json(self, original_basename, final_merged_path, master_meta_filepath, master_meta, was_segments, merge_successful):
-        json_path, json_content = None, {}
-        output_suffix_val = self.merge_output_suffix_var.get()
-
-        if was_segments:
-            if merge_successful and final_merged_path and not final_merged_path.startswith("N/A"):
-                out_fmt_selected = self.merge_output_format_var.get()
-                
-                json_content = {
-                    "source_video_basename": original_basename, "processing_mode": "segmented_then_merged",
-                    "final_output_path": os.path.abspath(final_merged_path), 
-                    "final_output_format_selected": out_fmt_selected,
-                    "master_metadata_path_source": os.path.abspath(master_meta_filepath) if master_meta_filepath else None,
-                    "global_processing_settings_summary": master_meta.get("global_processing_settings"),
-                    "merge_settings_summary": {
-                        "output_format_selected": out_fmt_selected, 
-                        "output_suffix": output_suffix_val,
-                        "alignment_method": self.merge_alignment_method_var.get(),
-                        "dithering": self.merge_dither_var.get(), "dither_strength": self.merge_dither_strength_var.get(),
-                        "gamma_correction": self.merge_gamma_correct_var.get(),
-                        "gamma_value_if_applied": self.merge_gamma_value_var.get() if self.merge_gamma_correct_var.get() else 1.0,
-                        "percentile_norm": self.merge_percentile_norm_var.get(),
-                        "norm_low_perc": self.merge_norm_low_perc_var.get(), "norm_high_perc": self.merge_norm_high_perc_var.get(),
-                    }, "generation_timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                }
-                if os.path.isdir(final_merged_path):
-                    json_path = os.path.join(os.path.dirname(final_merged_path.rstrip(os.sep)), f"{os.path.basename(final_merged_path.rstrip(os.sep))}.json")
-                elif os.path.isfile(final_merged_path):
-                    json_path = get_sidecar_json_filename(final_merged_path)
-                else: _logger.warning(f"    Cannot determine final JSON path for merged {original_basename} (output path: {final_merged_path}).") 
-            else: _logger.info(f"  Skipping final JSON for merged {original_basename} (merge not successful/path invalid).") 
-        else:
-            if master_meta and master_meta.get("jobs_info"):
-                job_info = master_meta["jobs_info"][0]
-                relative_output_filename = job_info.get("output_video_filename") 
-                if relative_output_filename:
-                    out_path = os.path.join(self.output_dir.get(), relative_output_filename)
-                    out_fmt_from_ext = os.path.splitext(relative_output_filename)[1].lstrip('.') 
-
-                    json_content = {
-                        "source_video_basename": original_basename, "processing_mode": "full_video",
-                        "final_output_path": os.path.abspath(out_path), 
-                        "final_output_format": out_fmt_from_ext,
-                        "global_processing_settings": master_meta.get("global_processing_settings"),
-                        "job_specific_details": job_info,
-                        "generation_timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                    }
-                    if os.path.isdir(out_path): 
-                         json_path = os.path.join(os.path.dirname(out_path.rstrip(os.sep)), f"{os.path.basename(out_path.rstrip(os.sep))}.json")
-                    elif os.path.isfile(out_path):
-                        json_path = get_sidecar_json_filename(out_path)
-                    else: _logger.warning(f"    Cannot determine final JSON path for full video {original_basename} (output path: {out_path}).") 
-                else: _logger.warning(f"  Skipping final JSON for full video {original_basename} (output path/format missing from job_info).") 
-            else: _logger.warning(f"  Skipping final JSON for full video {original_basename} (master_meta or job_info missing).") 
-
-        if json_path and json_content:
-            _logger.debug(f"    Attempting to save final output JSON to: {json_path}") 
-            if save_json_file(json_content, json_path): 
-                _logger.debug(f"  Successfully saved sidecar JSON for final output: {json_path}") 
-        elif self.save_final_output_json_var.get():
-            mode = "merged" if was_segments else "full video"
-            _logger.warning(f"  Final output JSON for {mode} '{original_basename}' not created (conditions not met, or save failed).")
-
-    def _save_master_metadata_and_cleanup_segment_json(self, master_meta_to_save, original_basename, main_output_dir, was_segments, segment_subfolder_path):
-        master_meta_filepath, meta_saved = None, False
-        if was_segments:
-            if not segment_subfolder_path:
-                segment_subfolder_path = os.path.join(main_output_dir, get_segment_output_folder_name(original_basename))
-            os.makedirs(segment_subfolder_path, exist_ok=True)
-            master_meta_filepath = os.path.join(segment_subfolder_path, f"{original_basename}_master_meta.json")
-        else:
-            master_meta_filepath = os.path.join(main_output_dir, f"{original_basename}_master_meta.json")
-
-        should_save_master_meta_here = was_segments
-        if should_save_master_meta_here:
-            if save_json_file(master_meta_to_save, master_meta_filepath):
-                _logger.debug(f"Saved master metadata for {original_basename} to {master_meta_filepath}")
-                meta_saved = True
-            if was_segments and meta_saved and segment_subfolder_path:
-                _logger.debug(f"  Attempting to delete individual segment JSONs for {original_basename} (master created).")
-                deleted_count = 0
-                for job_data in master_meta_to_save.get("jobs_info", []):
-                    npz_file = job_data.get("output_segment_filename")
-                    if npz_file:
-                        json_to_del = os.path.join(segment_subfolder_path, get_sidecar_json_filename(npz_file))
-                        if os.path.exists(json_to_del):
-                            try: os.remove(json_to_del); deleted_count += 1
-                            except Exception as e: _logger.error(f"ERROR deleting individual segment JSON {json_to_del}: {e}")
-                _logger.debug(f"    Deleted {deleted_count} individual segment JSONs.")
-            elif was_segments and not meta_saved:
-                _logger.warning(f"  Skipping deletion of individual segment JSONs for {original_basename} (master_meta.json not saved).")
-        elif not was_segments:
-            _logger.debug(f"Skipping save of '{os.path.basename(master_meta_filepath)}' by _save_master_metadata for full video mode for {original_basename}.")
-            meta_saved = False
-        return master_meta_filepath, meta_saved
-
-    def _set_ui_processing_state(self, is_processing: bool):
-        new_state = tk.DISABLED if is_processing else tk.NORMAL
-        cancel_state = tk.NORMAL if is_processing else tk.DISABLED
-        unique_widgets = list(set(self.widgets_to_disable_during_processing))
-
-        for widget in unique_widgets:
-            if widget == self.cancel_button: continue
-            if hasattr(widget, 'configure'):
-                try:
-                    if isinstance(widget, ttk.Combobox): widget.configure(state='disabled' if is_processing else 'readonly')
-                    else: widget.configure(state=new_state)
-                except tk.TclError: pass 
-                
-        if hasattr(self, 'help_menu') and self.help_menu:
-            try:
-                self.help_menu.entryconfig("Enable Debug Logging", state=new_state)
-            except tk.TclError: pass
-        
-        if hasattr(self, 'cancel_button') and self.cancel_button:
-             try: self.cancel_button.configure(state=cancel_state)
-             except tk.TclError: pass
-
-        if hasattr(self, 'file_menu'):
-            try:
-                self.file_menu.entryconfig("Use Local Models Only", state=new_state)
-                for item_label in ["Load Settings...", "Save Settings As...", "Reset Settings to Default"]:
-                    self.file_menu.entryconfig(item_label, state=new_state)
-            except tk.TclError: pass
-
-        # --- Phase 2: If processing has *finished*, re-evaluate conditional states ---
-        # This prevents conditional toggles from overriding the DISABLED state prematurely.
-        if not is_processing:
-            self.toggle_merge_related_options_active_state()
-            self.toggle_secondary_output_options_active_state()
-
-    def _show_help_for(self, help_key: str):
-        """Displays help content for a given key in a Tkinter Toplevel window."""
-        # _help_data should already be loaded by __init__
-        content = self._help_data.get(help_key)
-        
-        if not content:
-            messagebox.showinfo("Help Not Found", f"No help information available for '{help_key}'.\nEnsure '{DepthCrafterGUI.HELP_CONTENT_FILENAME}' is present and contains this key.")
-            _logger.warning(f"No help content found for key: '{help_key}' in {DepthCrafterGUI.HELP_CONTENT_FILENAME}.")
-            return
-
-        help_title = content.get("title", "Help Information")
-        help_text_str = content.get("text", "No details available.")
-        
-        # Now, create the Toplevel window as it was before
-        help_window = tk.Toplevel(self.root)
-        help_window.title(help_title)
-        help_window.minsize(400, 200)
-        help_window.transient(self.root)
-        help_window.grab_set()
-        
-        text_frame = ttk.Frame(help_window, padding="10")
-        text_frame.pack(expand=True, fill="both")
-        
-        help_text_widget = tk.Text(text_frame, wrap=tk.WORD, relief="flat", borderwidth=0, padx=5, pady=5, font=("Segoe UI", 9))
-        help_text_widget.insert(tk.END, help_text_str)
-        help_text_widget.config(state=tk.DISABLED)
-        
-        scrollbar = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=help_text_widget.yview)
-        help_text_widget['yscrollcommand'] = scrollbar.set
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        help_text_widget.pack(side=tk.LEFT, expand=True, fill="both")
-        
-        button_frame = ttk.Frame(help_window, padding=(0, 5, 0, 10))
-        button_frame.pack(fill=tk.X)
-        ok_button = tttk.Button(button_frame, text="OK", command=help_window.destroy, width=10)
-        ok_button.pack()
-        
-        self.root.update_idletasks()
-        help_window.update_idletasks()
-        x = self.root.winfo_x() + (self.root.winfo_width() // 2) - (help_window.winfo_width() // 2)
-        y = self.root.winfo_y() + (self.root.winfo_height() // 2) - (help_window.winfo_height() // 2)
-        help_window.geometry(f"+{x}+{y}")
-        ok_button.focus_set()
-        help_window.wait_window()
-        _logger.debug(f"Displayed help overview for '{help_key}'.")
-        
-    def _start_processing_wrapper(self, video_processing_jobs, base_job_info_map):
-        try: 
-            self.start_processing(video_processing_jobs, base_job_info_map)
-        finally: 
-            self._set_ui_processing_state(False)
-
-    def _toggle_debug_logging(self):
-        if self.debug_logging_enabled.get():
-            logging.getLogger().setLevel(logging.DEBUG) # Set root logger to DEBUG
-            _logger.info("Debug logging ENABLED.")
-        else:
-            logging.getLogger().setLevel(logging.INFO)  # Set root logger back to INFO
-            _logger.info("Debug logging DISABLED (set to INFO level).")
-            
 if __name__ == "__main__":
     # Configure basic logging for console output
     logging.basicConfig(level=logging.DEBUG, # Default to INFO level
