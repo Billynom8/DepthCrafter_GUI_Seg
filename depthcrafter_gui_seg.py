@@ -62,7 +62,7 @@ except ImportError:
     THEMEDTK_AVAILABLE = False
     _logger.warning("ttkthemes not found. Dark mode functionality will be disabled.")
 
-GUI_VERSION = "25.09.29"
+GUI_VERSION = "25.10.08"
 _HELP_TEXTS = {}
 
 DARK_MODE_COLORS = {
