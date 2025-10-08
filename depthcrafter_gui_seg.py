@@ -13,6 +13,7 @@ import time
 import numpy as np
 import torch
 import logging # Import standard logging
+import random
 
 # Configure a logger for this module
 _logger = logging.getLogger(__name__)
@@ -1307,9 +1308,9 @@ class DepthCrafterGUI:
         help_window.wait_window()
         _logger.debug(f"Displayed help overview for '{help_key}'.")
         
-    def _start_processing_wrapper(self, video_processing_jobs, base_job_info_map):
+    def _start_processing_wrapper(self, video_processing_jobs, base_job_info_map, effective_seed_for_run):
         try: 
-            self.start_processing(video_processing_jobs, base_job_info_map)
+            self.start_processing(video_processing_jobs, base_job_info_map, effective_seed_for_run)
         finally: 
             self._set_ui_processing_state(False)
 
@@ -2007,6 +2008,15 @@ class DepthCrafterGUI:
             _logger.warning(f"GUI: No valid video files or image sequences found in '{input_path_str}' for mode '{self.current_input_mode}'.")
             return
         
+        # --- NEW SEED GENERATION GUARD ---
+        gui_seed_setting = self.seed.get()
+        effective_seed_for_run = gui_seed_setting
+        if effective_seed_for_run < 0:
+            effective_seed_for_run = random.randint(0, 2**32 - 1)
+            _logger.debug(f"GUI: Seed was set to {gui_seed_setting} (negative). Generating a new random seed for this run: {effective_seed_for_run}")
+        else:
+            _logger.debug(f"GUI: Using user-specified seed: {effective_seed_for_run}")
+
         final_jobs_to_process = []
         base_job_info_map_for_run = {} 
 
@@ -2093,14 +2103,15 @@ class DepthCrafterGUI:
             self.status_message_var.set("Starting processing...")
             self._set_ui_processing_state(True)
             self.processing_thread = threading.Thread(target=self._start_processing_wrapper, 
-                                                      args=(final_jobs_to_process, base_job_info_map_for_run), 
+                                                      args=(final_jobs_to_process, base_job_info_map_for_run,
+                                                      effective_seed_for_run), 
                                                       daemon=True)
             self.processing_thread.start()
             self.root.after(100, self.process_queue) # Start queue processing for progress updates
         else:
             _logger.info("No videos/segments to process after considering existing data and user choices (or all skipped).")
 
-    def start_processing(self, video_processing_jobs, base_job_info_map):
+    def start_processing(self, video_processing_jobs, base_job_info_map, effective_seed_for_run):
         self.stop_event.clear()
         self.progress["value"] = 0
         self.progress["maximum"] = len(video_processing_jobs)
@@ -2206,6 +2217,9 @@ class DepthCrafterGUI:
                     job_info_to_run,
                     total_segments_for_this_video_overall
                 )
+                
+                # --- UPDATE THE SNAPSHOTTED SEED HERE ---
+                all_videos_master_metadata[current_video_path]["global_processing_settings"]["seed_setting"] = effective_seed_for_run
                 
                 pre_existing_successful_segment_metadatas = current_video_comprehensive_base_info.get("pre_existing_successful_jobs", [])
                 if pre_existing_successful_segment_metadatas:
