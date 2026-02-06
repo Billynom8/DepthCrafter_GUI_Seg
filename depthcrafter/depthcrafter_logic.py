@@ -86,7 +86,7 @@ class DepthCrafterDemo:
             else:
                 # If the value is "none", "None", or any other unrecognized string/value
                 # (or the legacy string "None"), we default to full CUDA.
-                self.pipe.to("cuda") 
+                self.pipe.to("cuda:0") 
                 _logger.info(f"CPU Offload set to '{cpu_offload}' (unrecognized/None option). Model loaded entirely on CUDA.")
 
                 
