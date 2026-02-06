@@ -14,23 +14,33 @@ from diffusers.training_utils import set_seed
 from depthcrafter.depth_crafter_ppl import DepthCrafterPipeline
 from depthcrafter.unet import DiffusersUNetSpatioTemporalConditionModelDepthCrafter
 
-# --- MODIFIED IMPORTS from depthcrafter.utils ---
-from depthcrafter.utils import (
-    save_video, read_video_frames,
+# --- GUI Extension Imports ---
+# Import enhanced/wrapped functions from gui_extensions
+from depthcrafter.gui_extensions import (
+    save_video,
+    read_video_frames,
+)
+
+# Import I/O utilities from gui_io_utils
+from depthcrafter.gui_io_utils import (
     save_depth_visual_as_mp4_util,
     save_depth_visual_as_png_sequence_util,
     save_depth_visual_as_exr_sequence_util,
     save_depth_visual_as_single_exr_util,
     read_image_sequence_as_frames,
     create_frames_from_single_image,
+    get_sidecar_json_filename,
+    save_json_file,
+)
+
+# Import video utilities from gui_video_utils
+from depthcrafter.gui_video_utils import (
     format_duration,
     get_segment_output_folder_name,
     get_segment_npz_output_filename,
     get_full_video_output_filename,
-    get_sidecar_json_filename,
-    save_json_file
 )
-# --- END MODIFIED IMPORTS ---
+# --- END GUI Extension Imports ---
 
 try:
     import OpenEXR

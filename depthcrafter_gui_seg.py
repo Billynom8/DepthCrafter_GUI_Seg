@@ -21,15 +21,19 @@ _logger = logging.getLogger(__name__)
 # Import the backend logic class
 from depthcrafter.depthcrafter_logic import DepthCrafterDemo
 
-from depthcrafter.utils import (
+# Import GUI-specific utilities from extension modules
+from depthcrafter.gui_video_utils import (
     format_duration,
     get_segment_output_folder_name,
     get_segment_npz_output_filename,
     get_full_video_output_filename,
-    get_sidecar_json_filename,
     get_image_sequence_metadata,
     get_single_image_metadata,
     define_video_segments,
+)
+
+from depthcrafter.gui_io_utils import (
+    get_sidecar_json_filename,
     load_json_file,
     save_json_file,
     save_depth_visual_as_mp4_util,
