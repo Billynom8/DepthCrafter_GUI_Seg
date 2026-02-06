@@ -1,9 +1,9 @@
 [project]
-name = "depthcrafter"
+name = "depthcrafter_gui_seg"
 version = "1.0.1"
 description = "Generating Consistent Long Depth Sequences for Open-world Videos"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = [
     "accelerate>=1.12.0",
     "decord>=0.6.0",
@@ -14,15 +14,28 @@ dependencies = [
     "matplotlib>=3.10.7",
     "mediapy>=1.2.4",
     "pytest>=9.0.1",
-    "torch>=2.7.1",
-    "torchaudio>=2.7.1",
-    "torchvision>=0.22.1",
+    "torch==2.9.1",
+    "torchaudio==2.9.1",
+    "torchvision==0.24.1",
     "transformers>=4.57.3",
-    "xformers>=0.0.31.post1",
+    "xformers==0.0.33.post2",
+    "decord==0.6.0",
+    "OpenEXR==3.2.4",
+    "imageio==2.37.0",
+    "Imath==0.0.2",
+    "ttkthemes>=3.3.0",
 ]
 
 [[tool.uv.index]]
-url = "https://download.pytorch.org/whl/cu118"
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch" }
+torchvision = { index = "pytorch" }
+torchaudio = { index = "pytorch" }
+xformers = { index = "pytorch" }
 
 [tool.pytest.ini_options]
 pythonpath = "."

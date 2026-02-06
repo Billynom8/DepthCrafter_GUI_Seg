@@ -1,6 +1,6 @@
 # 🛠️ Manual Installation Guide for DepthCrafter_GUI_Seg
 
-This guide walks you through manually installing the **DepthCrafter_GUI_Seg** environment without using the batch script.
+This guide walks you through manually installing the **DepthCrafter_GUI_Seg** environment without using the batch script. This guide uses `uv` for fast and efficient package management.
 
 ---
 
@@ -12,6 +12,7 @@ Ensure the following tools are installed and available in your system's PATH:
 - [Python 3.8+](https://www.python.org/)
 - [CUDA Toolkit 12.8 or 12.9](https://developer.nvidia.com/cuda-toolkit)
 - [FFMPEG](https://techtactician.com/how-to-install-ffmpeg-and-add-it-to-path-on-windows/)
+- [uv](https://github.com/astral-sh/uv) - Fast Python package installer and resolver
 
 ---
 
@@ -65,10 +66,10 @@ python --version
 
 ---
 
-### 5. Create a Virtual Environment
+### 5. Create a Virtual Environment and Sync Dependencies
 
 ```bash
-python -m venv venv
+uv venv
 ```
 
 ---
@@ -78,41 +79,33 @@ python -m venv venv
 **Windows:**
 
 ```bash
-venv\Scripts\activate
+.venv\Scripts\activate
 ```
 
 **macOS/Linux:**
 
 ```bash
-source venv/bin/activate
+source .venv/bin/activate
 ```
 
 ---
 
-### 7. Upgrade pip
+### 7. Install Dependencies
+
+Ensure `pyproject.toml` exists in the project directory, then run:
 
 ```bash
-python -m pip install --upgrade pip
+uv sync
 ```
+
+> This will install PyTorch with CUDA support and all dependencies defined in pyproject.toml. The `uv` tool automatically handles package resolution and installation efficiently.
 
 ---
 
-### 8. Install Dependencies
-
-Ensure `requirements.txt` exists in the project directory, then run:
+### 8. Install xformers
 
 ```bash
-python -m pip install --upgrade -r requirements.txt
-```
-
-> This will install PyTorch with CUDA support via the extra index URL defined in the file.
-
----
-
-### 9. Install xformers
-
-```bash
-python -m pip install -U xformers --index-url https://download.pytorch.org/whl/cu128
+uv pip install -U xformers --index-url https://download.pytorch.org/whl/cu128
 ```
 
 ---
@@ -121,5 +114,6 @@ python -m pip install -U xformers --index-url https://download.pytorch.org/whl/c
 
 - If any step fails, check your environment variables and permissions.
 - You can refer to `install_log.txt` (if generated during script-based install) for troubleshooting.
+- For issues with `uv`, visit the [uv documentation](https://docs.astral.sh/uv/) for help.
 - CUDA support is critical for GPU acceleration. Ensure your drivers and toolkit are correctly installed.
 
