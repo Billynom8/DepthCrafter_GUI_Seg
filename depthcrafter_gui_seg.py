@@ -27,13 +27,13 @@ from depthcrafter.gui_video_utils import (
     get_segment_output_folder_name,
     get_segment_npz_output_filename,
     get_full_video_output_filename,
-    get_image_sequence_metadata,
-    get_single_image_metadata,
     define_video_segments,
 )
 
 from depthcrafter.gui_io_utils import (
     get_sidecar_json_filename,
+    get_image_sequence_metadata,
+    get_single_image_metadata,
     load_json_file,
     save_json_file,
     save_depth_visual_as_mp4_util,

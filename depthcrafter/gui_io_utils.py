@@ -185,7 +185,7 @@ def get_video_stream_info(video_path: str) -> Optional[Tuple[dict, str]]:
         
         stream_info = {}
         
-        if "streams" in data and len(data["streams") > 0:
+        if "streams" in data and len(data["streams"]) > 0:
             s = data["streams"][0]
             
             stream_info["codec_name"] = s.get("codec_name")

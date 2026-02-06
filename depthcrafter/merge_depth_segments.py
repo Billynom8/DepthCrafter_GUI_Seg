@@ -11,13 +11,13 @@ import logging # Import standard logging
 _logger = logging.getLogger(__name__)
 
 from depthcrafter import dav_util as util
-from depthcrafter import utils as dc_utils
-from depthcrafter.utils import (
+from depthcrafter import gui_extensions as dc_utils
+from depthcrafter.gui_video_utils import (
     normalize_video_data,
     apply_gamma_correction_to_video,
     apply_dithering_to_video,
-    load_json_file,
 )
+from depthcrafter.gui_io_utils import load_json_file
 import imageio
 from typing import Optional
 
