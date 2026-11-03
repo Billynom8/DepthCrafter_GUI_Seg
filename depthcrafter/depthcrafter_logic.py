@@ -311,6 +311,16 @@ class DepthCrafterDemo:
             job_specific_metadata["original_height_loaded"] = original_h_loaded
             job_specific_metadata["original_width_loaded"] = original_w_loaded
 
+        # Image-sequence and single-image sources never set processed_height/width,
+        # so derive them from the loaded frames (N, H, W, C) to avoid a KeyError.
+        if "processed_height" not in job_specific_metadata or "processed_width" not in job_specific_metadata:
+            if actual_frames_to_process is not None and getattr(actual_frames_to_process, "ndim", 0) == 4:
+                job_specific_metadata["processed_height"] = int(actual_frames_to_process.shape[1])
+                job_specific_metadata["processed_width"] = int(actual_frames_to_process.shape[2])
+            else:
+                job_specific_metadata["processed_height"] = None
+                job_specific_metadata["processed_width"] = None
+
         return actual_frames_to_process, actual_fps_for_save, job_specific_metadata["processed_height"], job_specific_metadata["processed_width"]
 
     def _handle_no_frames_failure(self, job_specific_metadata: dict, full_save_path: str,
