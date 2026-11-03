@@ -75,6 +75,20 @@ EXR_BIT_DEPTH = "float32"
 EXR_BIT_DEPTHS = ("float32", "half")
 
 
+# Output format for full-video (non-segment) processing.
+# Only used when "Process as Segments" is OFF; segment outputs use the Merged Output options.
+FULL_OUTPUT_FORMAT = "mp4"
+FULL_OUTPUT_FORMATS = ("mp4", "main10_mp4", "png_sequence", "exr_sequence")
+
+
+def set_full_output_format(mode: str) -> None:
+    """Set the output format used for full-video (non-segment) results."""
+    global FULL_OUTPUT_FORMAT
+    if mode not in FULL_OUTPUT_FORMATS:
+        raise ValueError(f"full output format '{mode}' is invalid. Choose one of {FULL_OUTPUT_FORMATS}")
+    FULL_OUTPUT_FORMAT = mode
+
+
 def set_exr_bit_depth(mode: str) -> None:
     """Set the EXR output bit depth used by all EXR writers."""
     global EXR_BIT_DEPTH

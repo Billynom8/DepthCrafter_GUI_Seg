@@ -146,5 +146,8 @@
   },
   "exr_bit_depth": {
     "text": "Bit depth of EXR files written by the GUI.\nfloat32: full precision, largest files (default).\nhalf: 16-bit float, roughly half the file size, small loss of precision (about 3 decimal digits)."
+  },
+  "full_output_format": {
+    "text": "Output format when 'Process as Segments' is OFF.\nmp4: H.264 video (default).\nmain10_mp4: 10-bit H.265 video, smaller and smoother for review.\npng_sequence: one 16-bit PNG per frame, in a sub-folder.\nexr_sequence: one EXR per frame, uses the EXR Bit Depth setting.\nSequence outputs use min-max normalization over the whole clip, like the MP4."
   }
 }
