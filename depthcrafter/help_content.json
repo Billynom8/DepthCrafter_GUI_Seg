@@ -34,13 +34,13 @@
     "text": "Random seed for the generation process. Using the same seed with identical parameters and input should ideally produce the same depth map output.\nSet to -1 for a random seed each time, leading to slight variations in output if other stochastic processes are involved."
   },
   "cpu_offload": {
-      "text": "Moves parts of the model (like UNet, VAE) to CPU RAM when not actively used to save VRAM on the GPU.\n- 'model': Offloads the entire main model pipeline when it's idle between certain operations. Can save significant VRAM but introduces latency when moving data back and forth.\n- 'sequential': More fine-grained offloading of components within the model's execution flow. Balances VRAM savings and speed.\n- '': No offloading. Fastest if you have ample VRAM, but may cause out-of-memory errors on VRAM-constrained systems.\nThis option primarily affects the Diffusers pipeline components."
+    "text": "Moves parts of the model (like UNet, VAE) to CPU RAM when not actively used to save VRAM on the GPU.\n- 'model': Offloads the entire main model pipeline when it's idle between certain operations. Can save significant VRAM but introduces latency when moving data back and forth.\n- 'sequential': More fine-grained offloading of components within the model's execution flow. Balances VRAM savings and speed.\n- '': No offloading. Fastest if you have ample VRAM, but may cause out-of-memory errors on VRAM-constrained systems.\nThis option primarily affects the Diffusers pipeline components."
   },
   "cudnn_benchmark": {
     "text": "Enables cuDNN auto-tuner. When enabled, cuDNN will try to find the optimal algorithms for the specific hardware and input sizes at the beginning of processing.\nThis can lead to faster execution after an initial warm-up period, but the warm-up itself can take time. Best for consistent input sizes.\nOnly applicable for Nvidia GPUs. If you change this setting, a full restart of the script might be needed for it to take effect properly for the model initialization."
   },
   "save_final_json": {
-      "text": "If checked:\n- For 'Full Video' processing: A .json file with processing metadata will be saved alongside the final output depth video/sequence.\n- For 'Process as Segments' mode: \n    - Individual .json files are saved for each raw segment NPZ *during processing* (if this option is on AND keep_intermediate_npz is on, these might be kept, otherwise they are usually deleted after master_meta is created).\n    - A _master_meta.json is always created in the segment subfolder.\n    - If a final merged output is created, a .json sidecar will be saved for that merged output, summarizing settings and pointing to the master_meta.json."
+    "text": "If checked:\n- For 'Full Video' processing: A .json file with processing metadata will be saved alongside the final output depth video/sequence.\n- For 'Process as Segments' mode: \n    - Individual .json files are saved for each raw segment NPZ *during processing* (if this option is on AND keep_intermediate_npz is on, these might be kept, otherwise they are usually deleted after master_meta is created).\n    - A _master_meta.json is always created in the segment subfolder.\n    - If a final merged output is created, a .json sidecar will be saved for that merged output, summarizing settings and pointing to the master_meta.json."
   },
   "window_size": {
     "text": "This value has a dual role depending on the 'Process as Segments' setting:\n\n- Full Video Mode (Unchecked 'Process as Segments'): Defines the size of the processing window (number of frames) that slides over the video. The model processes the video in these chunks.\n\n- Segment Mode (Checked 'Process as Segments'): Defines the number of output frames in each generated segment NPZ file. This is the target length of each chunk before overlap is considered for processing.\n\nTypically 60-110 frames. Larger values can improve temporal consistency but require more VRAM and processing time per window/segment. Must be larger than 'Overlap'."
@@ -58,7 +58,7 @@
     "text": "Maximum number of frames to process from the input video. This count is applied *after* any 'Target FPS' adjustment.\nFor example, if an input video is 300 frames at 30fps, and Target FPS is 15, the video becomes effectively 150 frames long for processing. If 'Process Max Frames' is set to 100, only the first 100 of these 150 frames will be processed.\nSet to -1 to process all available frames (up to the video's natural end or as limited by segment definitions if 'Process as Segments' is active)."
   },
   "keep_npz": {
-      "text": "Only active if 'Process as Segments' is checked.\nIf this option is checked, the individual segment NPZ files (raw depth data) and any generated intermediate visual outputs (like segment MP4s or PNG sequences, based on 'Segment Visual Format') will be kept in the '[basename]_seg' subfolder even after merging is complete.\nIf unchecked (default), this subfolder and its contents are usually deleted after a successful merge to save space, leaving only the final merged output.\nThe 'Min Orig. Vid Frames to Keep NPZ' setting can override this to delete for short videos."
+    "text": "Only active if 'Process as Segments' is checked.\nIf this option is checked, the individual segment NPZ files (raw depth data) and any generated intermediate visual outputs (like segment MP4s or PNG sequences, based on 'Segment Visual Format') will be kept in the '[basename]_seg' subfolder even after merging is complete.\nIf unchecked (default), this subfolder and its contents are usually deleted after a successful merge to save space, leaving only the final merged output.\nThe 'Min Orig. Vid Frames to Keep NPZ' setting can override this to delete for short videos."
   },
   "min_frames_npz": {
     "text": "Only active if 'Process as Segments' and 'Keep intermediate NPZ files' are both checked.\nThis sets a threshold based on the *original* video's total frame count. If the original video has fewer frames than this number, the intermediate segment folder will be deleted even if 'Keep intermediate NPZ files' is checked.\nSet to 0 or a negative value to always respect the 'Keep intermediate NPZ files' checkbox, regardless of video length."
@@ -124,21 +124,24 @@
     "text": "Check to enable verbose debug logging in the console output. This provides much more detailed information about internal processes, which is useful for troubleshooting. Uncheck to revert to standard information-level logging."
   },
   "enable_secondary_output": {
-      "text": "If enabled, a second depth map video/sequence will be generated using a robust, global normalization method. This can help stabilize depth appearance by ignoring extreme outliers, preventing flicker caused by objects entering/exiting the scene."
+    "text": "If enabled, a second depth map video/sequence will be generated using a robust, global normalization method. This can help stabilize depth appearance by ignoring extreme outliers, preventing flicker caused by objects entering/exiting the scene."
   },
   "robust_norm_output_min": {
-      "text": "The minimum value (0-1) that the normalized secondary output depth map will be clamped to. Typically 0.0 (black/far)."
+    "text": "The minimum value (0-1) that the normalized secondary output depth map will be clamped to. Typically 0.0 (black/far)."
   },
   "robust_norm_output_max": {
-      "text": "The maximum value (0-1) that the normalized secondary output depth map will be clamped to. Typically 1.0 (white/close). Lowering this (e.g., to 0.25) can compress the entire scene to a darker visual range, emphasizing relative changes more subtly."
+    "text": "The maximum value (0-1) that the normalized secondary output depth map will be clamped to. Typically 1.0 (white/close). Lowering this (e.g., to 0.25) can compress the entire scene to a darker visual range, emphasizing relative changes more subtly."
   },
   "robust_norm_low_percentile": {
-      "text": "The lower percentile of raw depth values to consider for robust normalization. Depths numerically smaller than this percentile will be mapped to the 'Low' output range. Helps ignore extreme closest outliers (e.g., 0.5 for 0.5%)."
+    "text": "The lower percentile of raw depth values to consider for robust normalization. Depths numerically smaller than this percentile will be mapped to the 'Low' output range. Helps ignore extreme closest outliers (e.g., 0.5 for 0.5%)."
   },
   "robust_norm_high_percentile": {
-      "text": "The upper percentile of raw depth values to consider for robust normalization. Depths numerically larger than this percentile will be mapped to the 'High' output range. Helps ignore extreme farthest outliers (e.g., 99.5 for 99.5%). Setting a lower value (e.g., 75.0) can aggressively compress the far background to black."
+    "text": "The upper percentile of raw depth values to consider for robust normalization. Depths numerically larger than this percentile will be mapped to the 'High' output range. Helps ignore extreme farthest outliers (e.g., 99.5 for 99.5%). Setting a lower value (e.g., 75.0) can aggressively compress the far background to black."
   },
   "robust_output_suffix": {
-      "text": "The suffix added to the filename of the second (robustly normalized) output. E.g., '_clipped_depth' will result in 'video_name_clipped_depth.mp4'."
+    "text": "The suffix added to the filename of the second (robustly normalized) output. E.g., '_clipped_depth' will result in 'video_name_clipped_depth.mp4'."
+  },
+  "exr_transform": {
+    "text": "Cách đổi EXR (linear float) sang dải 0..1 trước khi đưa vào model.\nrec709: gamma Rec.709 chuẩn (mặc định).\naces_rec709: ACES filmic tonemap rồi Rec.709, dùng cho EXR HDR (giá trị >1).\nclip: chỉ kẹp 0..1, không gamma. Chỉ ảnh hưởng input EXR."
   }
 }

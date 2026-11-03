@@ -34,6 +34,8 @@ from depthcrafter.gui_io_utils import (
     get_sidecar_json_filename,
     get_image_sequence_metadata,
     get_single_image_metadata,
+    set_exr_default_transform,
+    EXR_TRANSFORMS,
     load_json_file,
     save_json_file,
     save_depth_visual_as_mp4_util,
@@ -175,6 +177,7 @@ class DepthCrafterGUI:
         self.keep_intermediate_npz_var = tk.BooleanVar(value=False)
         self.min_frames_to_keep_npz_var = tk.IntVar(value=0)
         self.keep_intermediate_segment_visual_format_var = tk.StringVar(value="mp4")
+        self.exr_transform_var = tk.StringVar(value="rec709")  # EXR input: rec709 | aces_rec709 | clip
         self.merge_output_suffix_var = tk.StringVar(value="_depth") # New Variable
         # self.merge_script_gui_silence_level_var = tk.StringVar(value="Normal (Info)") # Removed GUI verbosity control
         self.current_input_mode = "batch_folder" # "batch_folder", "single_video_file", "single_image_file", "image_sequence_folder"
@@ -1551,6 +1554,13 @@ class DepthCrafterGUI:
         _create_hover_tooltip(self.combo_cpu_offload, "cpu_offload")
         self.widgets_to_disable_during_processing.append(self.combo_cpu_offload); row_idx += 1
 
+        # EXR Input Transform
+        ttk.Label(main_params_frame, text="EXR Input Transform:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        self.combo_exr_transform = ttk.Combobox(main_params_frame, textvariable=self.exr_transform_var, values=list(EXR_TRANSFORMS), width=17, state="readonly")
+        self.combo_exr_transform.grid(row=row_idx, column=1, padx=5, pady=2, sticky="w")
+        _create_hover_tooltip(self.combo_exr_transform, "exr_transform")
+        self.widgets_to_disable_during_processing.append(self.combo_exr_transform); row_idx += 1
+
         # --- Frame & Segment Control Frame ---
         fs_frame = ttk.LabelFrame(settings_container_frame, text="Frame & Segment Control")
         fs_frame.grid(row=0, column=1, padx=(5,0), pady=5, sticky="nsew") # Placed in new container
@@ -2111,6 +2121,7 @@ class DepthCrafterGUI:
             self.current_resolution_var.set("N/A")
             self.current_frames_var.set("N/A")
             # --------------------------------------------------
+            set_exr_default_transform(self.exr_transform_var.get())
             self.status_message_var.set(f"Starting processing {len(final_jobs_to_process_sources)} files/sequences...")
             self.progress["value"] = 0 # Initialize progress bar value
             self.progress["maximum"] = len(final_jobs_to_process_sources) # Set progress bar max to total files/sources
