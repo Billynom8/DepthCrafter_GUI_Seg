@@ -22,6 +22,7 @@ from depthcrafter.gui_extensions import (
 )
 
 # Import I/O utilities from gui_io_utils
+from depthcrafter import gui_io_utils as gio
 from depthcrafter.gui_io_utils import (
     save_depth_visual_as_mp4_util,
     save_depth_visual_as_png_sequence_util,
@@ -311,6 +312,16 @@ class DepthCrafterDemo:
             job_specific_metadata["original_height_loaded"] = original_h_loaded
             job_specific_metadata["original_width_loaded"] = original_w_loaded
 
+        # Image-sequence and single-image sources never set processed_height/width,
+        # so derive them from the loaded frames (N, H, W, C) to avoid a KeyError.
+        if "processed_height" not in job_specific_metadata or "processed_width" not in job_specific_metadata:
+            if actual_frames_to_process is not None and getattr(actual_frames_to_process, "ndim", 0) == 4:
+                job_specific_metadata["processed_height"] = int(actual_frames_to_process.shape[1])
+                job_specific_metadata["processed_width"] = int(actual_frames_to_process.shape[2])
+            else:
+                job_specific_metadata["processed_height"] = None
+                job_specific_metadata["processed_width"] = None
+
         return actual_frames_to_process, actual_fps_for_save, job_specific_metadata["processed_height"], job_specific_metadata["processed_width"]
 
     def _handle_no_frames_failure(self, job_specific_metadata: dict, full_save_path: str,
@@ -456,6 +467,32 @@ class DepthCrafterDemo:
             res_normalized_for_mp4 = np.zeros_like(res)
         res_normalized_for_mp4 = np.clip(res_normalized_for_mp4, 0, 1)
 
+        output_format = gio.FULL_OUTPUT_FORMAT
+        job_specific_metadata["full_output_format"] = output_format
+
+        # Frame-sequence outputs: one file per frame in a sub-folder next to full_save_path
+        if output_format in ("png_sequence", "exr_sequence"):
+            try:
+                out_dir = os.path.dirname(full_save_path)
+                base_no_ext = os.path.splitext(os.path.basename(full_save_path))[0]
+                if output_format == "png_sequence":
+                    saved_path, save_err = gio.save_depth_visual_as_png_sequence_util(
+                        res_normalized_for_mp4, out_dir, base_no_ext)
+                else:
+                    if not gio._OPENEXR_AVAILABLE:
+                        raise RuntimeError("OpenEXR/Imath libraries not available.")
+                    saved_path, save_err = gio.save_depth_visual_as_exr_sequence_util(
+                        res_normalized_for_mp4, out_dir, base_no_ext)
+                if save_err or not saved_path:
+                    raise RuntimeError(save_err or "unknown sequence save error")
+                job_specific_metadata["full_output_path"] = os.path.abspath(saved_path)
+                _logger.debug(f"Saved full-video {output_format} to: {saved_path}")
+                return True
+            except Exception as e_seq:
+                _logger.error(f"Failed to save full-video {output_format} for {full_save_path}: {e_seq}")
+                job_specific_metadata["status"] = "failure_full_output_save"
+                return False
+
         try:
             save_video_fps_full = actual_fps_for_save
             if save_video_fps_full == -1.0:
@@ -465,9 +502,8 @@ class DepthCrafterDemo:
                 _logger.warning(f"Logic Save Video: FPS value is zero or negative at save point, falling back to 30.0. FPS: {save_video_fps_full}")
                 save_video_fps_full = 30.0
             
-            output_format_for_full_video = job_specific_metadata.get("preferred_output_format", "mp4")
-
-            save_video(res_normalized_for_mp4, full_save_path, fps=save_video_fps_full, output_format=output_format_for_full_video)
+            save_video(res_normalized_for_mp4, full_save_path, fps=save_video_fps_full, output_format=output_format)
+            job_specific_metadata["full_output_path"] = full_save_path
             _logger.debug(f"Successfully saved: {full_save_path}")
             return True
         except Exception as e_save_mp4:
@@ -615,7 +651,8 @@ class DepthCrafterDemo:
         )
         
         _logger.debug(f"Inference job for {original_video_basename} finished. Status: {job_specific_metadata['status']}. Duration: {job_specific_metadata['internal_processing_duration_formatted']}. Output: {full_save_path if saved_output_successfully else 'N/A'}")
-        return full_save_path if saved_output_successfully else None, job_specific_metadata
+        returned_path = job_specific_metadata.get("full_output_path", full_save_path)
+        return returned_path if saved_output_successfully else None, job_specific_metadata
     
     def run(self,
             video_path_or_frames_or_info: Union[str, np.ndarray, dict],

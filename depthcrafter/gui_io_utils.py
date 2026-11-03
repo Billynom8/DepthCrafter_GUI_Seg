@@ -27,6 +27,150 @@ except ImportError:
     _logger.warning("OpenEXR/Imath libraries not found. EXR features will be limited.")
 
 
+# ---------------------------------------------------------------------------
+# EXR input + color transforms
+# ---------------------------------------------------------------------------
+# Chế độ biến đổi EXR (giá trị linear float -> sRGB-ish 0..1 cho model):
+#   "rec709"      : Rec.709 OETF (gamma chuẩn), clip 0..1  [mặc định]
+#   "aces_rec709" : ACES filmic tonemap (fitted curve) rồi Rec.709 OETF, cho HDR
+#   "clip"        : chỉ clip 0..1, không gamma
+EXR_DEFAULT_TRANSFORM = "rec709"
+EXR_TRANSFORMS = ("rec709", "aces_rec709", "clip")
+
+
+def set_exr_default_transform(mode: str) -> None:
+    """Đổi chế độ EXR mặc định (GUI gọi trước khi chạy job)."""
+    global EXR_DEFAULT_TRANSFORM
+    if mode not in EXR_TRANSFORMS:
+        raise ValueError(f"exr_transform '{mode}' không hợp lệ. Chọn một trong {EXR_TRANSFORMS}")
+    EXR_DEFAULT_TRANSFORM = mode
+
+
+def read_exr_rgb(path: str) -> np.ndarray:
+    """Đọc EXR -> float32 HxWx3 linear, giữ nguyên giá trị HDR."""
+    if not _OPENEXR_AVAILABLE:
+        raise RuntimeError("OpenEXR/Imath chưa cài, không đọc được EXR.")
+    f = OpenEXR.InputFile(path)
+    hdr = f.header()
+    dw = hdr["dataWindow"]
+    w = dw.max.x - dw.min.x + 1
+    h = dw.max.y - dw.min.y + 1
+    pt = Imath.PixelType(Imath.PixelType.FLOAT)
+    names = list(hdr["channels"].keys())
+
+    def ch(name):
+        return np.frombuffer(f.channel(name, pt), dtype=np.float32).reshape(h, w)
+
+    if all(c in names for c in ("R", "G", "B")):
+        rgb = np.stack([ch("R"), ch("G"), ch("B")], axis=-1)
+    else:  # EXR kiểu depth/Y/mono: lặp 1 kênh thành RGB
+        base = "Y" if "Y" in names else names[0]
+        rgb = np.repeat(ch(base)[..., None], 3, axis=-1)
+    f.close()
+    return np.nan_to_num(rgb, nan=0.0, posinf=1.0, neginf=0.0).astype(np.float32)
+
+
+# EXR output bit depth: "float32" (default, full precision) or "half" (float16, ~half the size)
+EXR_BIT_DEPTH = "float32"
+EXR_BIT_DEPTHS = ("float32", "half")
+
+
+# Output format for full-video (non-segment) processing.
+# Only used when "Process as Segments" is OFF; segment outputs use the Merged Output options.
+FULL_OUTPUT_FORMAT = "mp4"
+FULL_OUTPUT_FORMATS = ("mp4", "main10_mp4", "png_sequence", "exr_sequence")
+
+
+def set_full_output_format(mode: str) -> None:
+    """Set the output format used for full-video (non-segment) results."""
+    global FULL_OUTPUT_FORMAT
+    if mode not in FULL_OUTPUT_FORMATS:
+        raise ValueError(f"full output format '{mode}' is invalid. Choose one of {FULL_OUTPUT_FORMATS}")
+    FULL_OUTPUT_FORMAT = mode
+
+
+def set_exr_bit_depth(mode: str) -> None:
+    """Set the EXR output bit depth used by all EXR writers."""
+    global EXR_BIT_DEPTH
+    if mode not in EXR_BIT_DEPTHS:
+        raise ValueError(f"exr_bit_depth '{mode}' is invalid. Choose one of {EXR_BIT_DEPTHS}")
+    EXR_BIT_DEPTH = mode
+
+
+def exr_pixel_type():
+    """Imath pixel type for the current EXR output bit depth."""
+    kind = Imath.PixelType.HALF if EXR_BIT_DEPTH == "half" else Imath.PixelType.FLOAT
+    return Imath.PixelType(kind)
+
+
+def exr_pixel_bytes(arr: np.ndarray) -> bytes:
+    """Cast a float array to the current EXR bit depth and return its raw bytes."""
+    dtype = np.float16 if EXR_BIT_DEPTH == "half" else np.float32
+    return np.ascontiguousarray(arr, dtype=dtype).tobytes()
+
+
+def read_exr_size(path: str) -> Tuple[int, int]:
+    """Lấy (h, w) từ header EXR, không đọc pixel."""
+    if not _OPENEXR_AVAILABLE:
+        raise RuntimeError("OpenEXR/Imath chưa cài, không đọc được EXR.")
+    f = OpenEXR.InputFile(path)
+    dw = f.header()["dataWindow"]
+    f.close()
+    return dw.max.y - dw.min.y + 1, dw.max.x - dw.min.x + 1
+
+
+def _rec709_oetf(x: np.ndarray) -> np.ndarray:
+    x = np.clip(x, 0.0, None)
+    return np.where(x < 0.018, 4.5 * x, 1.099 * np.power(np.maximum(x, 1e-12), 0.45) - 0.099)
+
+
+def apply_exr_transform(rgb_linear: np.ndarray, mode: str) -> np.ndarray:
+    """Biến đổi linear float -> display 0..1 theo chế độ đã chọn."""
+    if mode not in EXR_TRANSFORMS:
+        raise ValueError(f"exr_transform '{mode}' không hợp lệ. Chọn một trong {EXR_TRANSFORMS}")
+    x = np.clip(rgb_linear, 0.0, None)
+    if mode == "clip":
+        out = x
+    elif mode == "rec709":
+        out = _rec709_oetf(x)
+    else:  # aces_rec709: fitted ACES filmic (Narkowicz) rồi Rec.709
+        out = _rec709_oetf((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14))
+    return np.clip(out, 0.0, 1.0).astype(np.float32)
+
+
+def _image_shape(path: str) -> Tuple[int, int]:
+    """(h, w) của ảnh bất kỳ được hỗ trợ."""
+    if path.lower().endswith(".exr"):
+        return read_exr_size(path)
+    img = imageio.v2.imread(path)
+    return img.shape[0], img.shape[1]
+
+
+def read_any_image_float01(path: str, exr_transform: Optional[str] = None) -> np.ndarray:
+    """Đọc ảnh bất kỳ -> float32 HxWx3 trong 0..1. EXR đi qua color transform."""
+    if path.lower().endswith(".exr"):
+        mode = exr_transform or EXR_DEFAULT_TRANSFORM
+        return apply_exr_transform(read_exr_rgb(path), mode)
+    img = imageio.v2.imread(path)
+    if img.ndim == 2:
+        img = np.stack([img] * 3, axis=-1)
+    if img.shape[2] == 4:
+        img = img[..., :3]
+    return img.astype(np.float32) / 255.0
+
+
+def _resize_float_hwc(img: np.ndarray, target_w: int, target_h: int) -> np.ndarray:
+    """Resize float HxWxC giữ precision (PIL mode F, từng kênh)."""
+    if img.shape[0] == target_h and img.shape[1] == target_w:
+        return img
+    chans = []
+    for c in range(img.shape[2]):
+        pil = PIL.Image.fromarray(img[..., c].astype(np.float32))
+        chans.append(np.array(pil.resize((target_w, target_h), PIL.Image.LANCZOS), dtype=np.float32))
+    # Lanczos overshoot ra ngoài 0..1 trên float -> clip lại (uint8 cũ tự làm việc này)
+    return np.clip(np.stack(chans, axis=-1), 0.0, 1.0).astype(np.float32)
+
+
 def load_json_file(filepath: str) -> Optional[dict]:
     """
     Loads data from a JSON file.
@@ -118,8 +262,7 @@ def get_image_sequence_metadata(folder_path: str, target_fps_from_gui: int) -> T
         return None, None, None, None, None
 
     try:
-        first_frame_img = imageio.v2.imread(frames[0])
-        h, w = first_frame_img.shape[:2]
+        h, w = _image_shape(frames[0])
     except Exception as e:
         _logger.error(f"Could not read image file '{frames[0]}'. Error: {e}")
         return None, None, None, None, None
@@ -146,8 +289,7 @@ def get_single_image_metadata(
         Tuple of (frame_count, fps, height, width, stream_info)
     """
     try:
-        img = imageio.v2.imread(image_path)
-        h, w = img.shape[:2]
+        h, w = _image_shape(image_path)
     except Exception as e:
         _logger.error(f"Could not read image file '{image_path}'. Error: {e}")
         return None, None, None, None, None
@@ -243,7 +385,8 @@ def read_image_sequence_as_frames(
     num_frames_to_load: int,
     target_height: int,
     target_width: int,
-    start_index: int = 0
+    start_index: int = 0,
+    exr_transform: Optional[str] = None
 ) -> Tuple[Optional[np.ndarray], Optional[int], Optional[int]]:
     """
     Reads a segment of an image sequence from a folder into a NumPy array.
@@ -286,12 +429,8 @@ def read_image_sequence_as_frames(
         return None, None, None
 
     loaded_frames_list = []
-    original_h, original_w = 0, 0
-
     try:
-        first_img = imageio.v2.imread(all_image_paths_sorted[0])
-        original_h, original_w = first_img.shape[:2]
-        
+        original_h, original_w = _image_shape(all_image_paths_sorted[0])
         target_h = max(64, round(target_height / 64) * 64)
         target_w = max(64, round(target_width / 64) * 64)
     except Exception as e:
@@ -300,23 +439,13 @@ def read_image_sequence_as_frames(
 
     for frame_path in image_paths_for_segment:
         try:
-            img = imageio.v2.imread(frame_path)
-            
-            if img.shape[0] != target_h or img.shape[1] != target_w:
-                pil_img = PIL.Image.fromarray(img)
-                resized_pil_img = pil_img.resize((target_w, target_h), PIL.Image.LANCZOS)
-                img = np.array(resized_pil_img)
-
-            if img.ndim == 2:
-                img = np.stack([img] * 3, axis=-1)
-            if img.shape[2] == 4:
-                img = img[..., :3]
-
-            loaded_frames_list.append((img.astype(np.float32) / 255.0))
+            img = read_any_image_float01(frame_path, exr_transform)
+            img = _resize_float_hwc(img, target_w, target_h)
+            loaded_frames_list.append(img.astype(np.float32))
         except Exception as e:
             _logger.warning(f"Error reading frame '{frame_path}': {e}. Skipping.")
             continue
-    
+
     if not loaded_frames_list:
         _logger.error(f"Failed to load any frames from '{folder_path}'")
         return None, None, None
@@ -330,7 +459,8 @@ def create_frames_from_single_image(
     image_path: str,
     num_frames_to_generate: int,
     target_height: int,
-    target_width: int
+    target_width: int,
+    exr_transform: Optional[str] = None
 ) -> Tuple[Optional[np.ndarray], Optional[int], Optional[int]]:
     """
     Creates a sequence of identical frames from a single image.
@@ -345,23 +475,11 @@ def create_frames_from_single_image(
         Tuple of (frames_array, original_h, original_w)
     """
     try:
-        img_arr = imageio.v2.imread(image_path)
-        original_h, original_w = img_arr.shape[:2]
-
+        original_h, original_w = _image_shape(image_path)
         target_h = max(64, round(target_height / 64) * 64)
         target_w = max(64, round(target_width / 64) * 64)
 
-        if img_arr.shape[0] != target_h or img_arr.shape[1] != target_w:
-            pil_img = PIL.Image.fromarray(img_arr)
-            resized_pil_img = pil_img.resize((target_w, target_h), PIL.Image.LANCZOS)
-            img_arr = np.array(resized_pil_img)
-            
-        if img_arr.ndim == 2:
-            img_arr = np.stack([img_arr] * 3, axis=-1)
-        if img_arr.shape[2] == 4:
-            img_arr = img_arr[..., :3]
-
-        frame_float = img_arr.astype(np.float32) / 255.0
+        frame_float = _resize_float_hwc(read_any_image_float01(image_path, exr_transform), target_w, target_h)
         frames_array = np.stack([frame_float] * num_frames_to_generate, axis=0)
         _logger.info(f"Single Image: Generated {frames_array.shape[0]} frames from '{image_path}' ({frames_array.shape[1]}x{frames_array.shape[2]})")
         return frames_array, original_h, original_w
@@ -473,21 +591,21 @@ def save_depth_visual_as_exr_sequence_util(
             try:
                 header = OpenEXR.Header(width, height)
                 if frame_data_float32.ndim == 2:
-                    header['channels'] = {'Z': Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT))}
-                    pixel_data = {'Z': frame_data_float32.tobytes()}
+                    header['channels'] = {'Z': Imath.Channel(exr_pixel_type())}
+                    pixel_data = {'Z': exr_pixel_bytes(frame_data_float32)}
                 elif frame_data_float32.ndim == 3 and frame_data_float32.shape[-1] == 1:
-                    header['channels'] = {'Z': Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT))}
-                    pixel_data = {'Z': frame_data_float32.squeeze().tobytes()}
+                    header['channels'] = {'Z': Imath.Channel(exr_pixel_type())}
+                    pixel_data = {'Z': exr_pixel_bytes(frame_data_float32.squeeze())}
                 elif frame_data_float32.ndim == 3 and frame_data_float32.shape[-1] == 3:
                     header['channels'] = {
-                        'R': Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT)),
-                        'G': Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT)),
-                        'B': Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT))
+                        'R': Imath.Channel(exr_pixel_type()),
+                        'G': Imath.Channel(exr_pixel_type()),
+                        'B': Imath.Channel(exr_pixel_type())
                     }
                     pixel_data = {
-                        'R': frame_data_float32[:, :, 0].tobytes(),
-                        'G': frame_data_float32[:, :, 1].tobytes(),
-                        'B': frame_data_float32[:, :, 2].tobytes()
+                        'R': exr_pixel_bytes(frame_data_float32[:, :, 0]),
+                        'G': exr_pixel_bytes(frame_data_float32[:, :, 1]),
+                        'B': exr_pixel_bytes(frame_data_float32[:, :, 2])
                     }
                 else:
                     _logger.error(f"Unsupported frame shape: {frame_data_float32.shape}")
@@ -545,21 +663,21 @@ def save_depth_visual_as_single_exr_util(
         pixel_data = {}
 
         if frame_float32.ndim == 2:
-            header['channels'] = {'Z': Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT))}
-            pixel_data = {'Z': frame_float32.tobytes()}
+            header['channels'] = {'Z': Imath.Channel(exr_pixel_type())}
+            pixel_data = {'Z': exr_pixel_bytes(frame_float32)}
         elif frame_float32.ndim == 3 and frame_float32.shape[-1] == 1:
-            header['channels'] = {'Z': Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT))}
-            pixel_data = {'Z': frame_float32.squeeze().tobytes()}
+            header['channels'] = {'Z': Imath.Channel(exr_pixel_type())}
+            pixel_data = {'Z': exr_pixel_bytes(frame_float32.squeeze())}
         elif frame_float32.ndim == 3 and frame_float32.shape[-1] == 3:
             header['channels'] = {
-                'R': Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT)),
-                'G': Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT)),
-                'B': Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT))
+                'R': Imath.Channel(exr_pixel_type()),
+                'G': Imath.Channel(exr_pixel_type()),
+                'B': Imath.Channel(exr_pixel_type())
             }
             pixel_data = {
-                'R': frame_float32[:, :, 0].tobytes(),
-                'G': frame_float32[:, :, 1].tobytes(),
-                'B': frame_float32[:, :, 2].tobytes()
+                'R': exr_pixel_bytes(frame_float32[:, :, 0]),
+                'G': exr_pixel_bytes(frame_float32[:, :, 1]),
+                'B': exr_pixel_bytes(frame_float32[:, :, 2])
             }
         
         exr_file = OpenEXR.OutputFile(output_exr_filepath, header)

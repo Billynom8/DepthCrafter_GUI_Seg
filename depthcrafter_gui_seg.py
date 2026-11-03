@@ -34,6 +34,12 @@ from depthcrafter.gui_io_utils import (
     get_sidecar_json_filename,
     get_image_sequence_metadata,
     get_single_image_metadata,
+    set_exr_default_transform,
+    set_exr_bit_depth,
+    set_full_output_format,
+    EXR_TRANSFORMS,
+    EXR_BIT_DEPTHS,
+    FULL_OUTPUT_FORMATS,
     load_json_file,
     save_json_file,
     save_depth_visual_as_mp4_util,
@@ -175,6 +181,9 @@ class DepthCrafterGUI:
         self.keep_intermediate_npz_var = tk.BooleanVar(value=False)
         self.min_frames_to_keep_npz_var = tk.IntVar(value=0)
         self.keep_intermediate_segment_visual_format_var = tk.StringVar(value="mp4")
+        self.exr_transform_var = tk.StringVar(value="rec709")  # EXR input: rec709 | aces_rec709 | clip
+        self.exr_bit_depth_var = tk.StringVar(value="float32")  # EXR output: float32 | half
+        self.full_output_format_var = tk.StringVar(value="mp4")  # full-video output: mp4 | main10_mp4 | png_sequence | exr_sequence
         self.merge_output_suffix_var = tk.StringVar(value="_depth") # New Variable
         # self.merge_script_gui_silence_level_var = tk.StringVar(value="Normal (Info)") # Removed GUI verbosity control
         self.current_input_mode = "batch_folder" # "batch_folder", "single_video_file", "single_image_file", "image_sequence_folder"
@@ -223,6 +232,9 @@ class DepthCrafterGUI:
             "keep_intermediate_npz_var": self.keep_intermediate_npz_var,
             "min_frames_to_keep_npz_var": self.min_frames_to_keep_npz_var,
             "keep_intermediate_segment_visual_format_var": self.keep_intermediate_segment_visual_format_var,
+            "exr_transform_var": self.exr_transform_var,
+            "exr_bit_depth_var": self.exr_bit_depth_var,
+            "full_output_format_var": self.full_output_format_var,
             "merge_output_suffix_var": self.merge_output_suffix_var,
             "use_local_models_only_var": self.use_local_models_only_var,
             "target_height": self.target_height,
@@ -474,6 +486,7 @@ class DepthCrafterGUI:
 
     def _execute_re_merge(self, remerge_args_dict):
         self.stop_event.clear(); self.progress["value"] = 0; self.progress["maximum"] = 1
+        set_exr_bit_depth(self.exr_bit_depth_var.get())
         start_time = time.perf_counter()
         primary_output_path = "N/A (Merge Failed)" # Initialize to ensure it's always defined
         try:
@@ -1551,6 +1564,20 @@ class DepthCrafterGUI:
         _create_hover_tooltip(self.combo_cpu_offload, "cpu_offload")
         self.widgets_to_disable_during_processing.append(self.combo_cpu_offload); row_idx += 1
 
+        # EXR Input Transform
+        ttk.Label(main_params_frame, text="EXR Input Transform:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        self.combo_exr_transform = ttk.Combobox(main_params_frame, textvariable=self.exr_transform_var, values=list(EXR_TRANSFORMS), width=17, state="readonly")
+        self.combo_exr_transform.grid(row=row_idx, column=1, padx=5, pady=2, sticky="w")
+        _create_hover_tooltip(self.combo_exr_transform, "exr_transform")
+        self.widgets_to_disable_during_processing.append(self.combo_exr_transform); row_idx += 1
+
+        # EXR Output Bit Depth
+        ttk.Label(main_params_frame, text="EXR Output Bit Depth:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        self.combo_exr_bit_depth = ttk.Combobox(main_params_frame, textvariable=self.exr_bit_depth_var, values=list(EXR_BIT_DEPTHS), width=17, state="readonly")
+        self.combo_exr_bit_depth.grid(row=row_idx, column=1, padx=5, pady=2, sticky="w")
+        _create_hover_tooltip(self.combo_exr_bit_depth, "exr_bit_depth")
+        self.widgets_to_disable_during_processing.append(self.combo_exr_bit_depth); row_idx += 1
+
         # --- Frame & Segment Control Frame ---
         fs_frame = ttk.LabelFrame(settings_container_frame, text="Frame & Segment Control")
         fs_frame.grid(row=0, column=1, padx=(5,0), pady=5, sticky="nsew") # Placed in new container
@@ -1596,6 +1623,14 @@ class DepthCrafterGUI:
         self.process_as_segments_cb.grid(row=row_idx, column=0, columnspan=2, sticky="w", padx=5, pady=2)
         _create_hover_tooltip(self.process_as_segments_cb, "process_as_segments")
         self.widgets_to_disable_during_processing.append(self.process_as_segments_cb); row_idx += 1
+
+        # Full-Video Output Format (used when Process as Segments is OFF)
+        ttk.Label(fs_frame, text="Full-Video Output:").grid(row=row_idx, column=0, sticky="e", padx=5, pady=2)
+        full_fmt_values = [f for f in FULL_OUTPUT_FORMATS if OPENEXR_AVAILABLE_GUI or f != "exr_sequence"]
+        self.combo_full_output_format = ttk.Combobox(fs_frame, textvariable=self.full_output_format_var, values=full_fmt_values, width=17, state="readonly")
+        self.combo_full_output_format.grid(row=row_idx, column=1, padx=5, pady=2, sticky="w")
+        _create_hover_tooltip(self.combo_full_output_format, "full_output_format")
+        self.widgets_to_disable_during_processing.append(self.combo_full_output_format); row_idx += 1
 
         # --- Merged Output Options Frame ---
         merge_opts_frame = ttk.LabelFrame(settings_container_frame, text="Merged Output Options (if segments processed)")
@@ -2111,6 +2146,9 @@ class DepthCrafterGUI:
             self.current_resolution_var.set("N/A")
             self.current_frames_var.set("N/A")
             # --------------------------------------------------
+            set_exr_default_transform(self.exr_transform_var.get())
+            set_exr_bit_depth(self.exr_bit_depth_var.get())
+            set_full_output_format(self.full_output_format_var.get())
             self.status_message_var.set(f"Starting processing {len(final_jobs_to_process_sources)} files/sequences...")
             self.progress["value"] = 0 # Initialize progress bar value
             self.progress["maximum"] = len(final_jobs_to_process_sources) # Set progress bar max to total files/sources
