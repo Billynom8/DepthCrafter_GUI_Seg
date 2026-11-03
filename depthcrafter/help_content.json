@@ -143,5 +143,8 @@
   },
   "exr_transform": {
     "text": "Cách đổi EXR (linear float) sang dải 0..1 trước khi đưa vào model.\nrec709: gamma Rec.709 chuẩn (mặc định).\naces_rec709: ACES filmic tonemap rồi Rec.709, dùng cho EXR HDR (giá trị >1).\nclip: chỉ kẹp 0..1, không gamma. Chỉ ảnh hưởng input EXR."
+  },
+  "exr_bit_depth": {
+    "text": "Bit depth of EXR files written by the GUI.\nfloat32: full precision, largest files (default).\nhalf: 16-bit float, roughly half the file size, small loss of precision (about 3 decimal digits)."
   }
 }

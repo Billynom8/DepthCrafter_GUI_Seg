@@ -12,6 +12,7 @@ _logger = logging.getLogger(__name__)
 
 from depthcrafter import dav_util as util
 from depthcrafter import gui_extensions as dc_utils
+from depthcrafter.gui_io_utils import exr_pixel_type, exr_pixel_bytes
 from depthcrafter.gui_video_utils import (
     normalize_video_data,
     apply_gamma_correction_to_video,
@@ -124,10 +125,10 @@ def save_single_frame_exr(frame_data: np.ndarray, output_path: str):
     height, width = frame_data.shape
     frame_data_float32 = frame_data.astype(np.float32)
     header = OpenEXR.Header(width, height)
-    header["channels"] = {"Z": Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT))}
+    header["channels"] = {"Z": Imath.Channel(exr_pixel_type())}
     exr_file = OpenEXR.OutputFile(output_path, header)
     try:
-        exr_file.writePixels({"Z": frame_data_float32.tobytes()})
+        exr_file.writePixels({"Z": exr_pixel_bytes(frame_data_float32)})
     finally:
         exr_file.close()
 

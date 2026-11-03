@@ -70,6 +70,31 @@ def read_exr_rgb(path: str) -> np.ndarray:
     return np.nan_to_num(rgb, nan=0.0, posinf=1.0, neginf=0.0).astype(np.float32)
 
 
+# EXR output bit depth: "float32" (default, full precision) or "half" (float16, ~half the size)
+EXR_BIT_DEPTH = "float32"
+EXR_BIT_DEPTHS = ("float32", "half")
+
+
+def set_exr_bit_depth(mode: str) -> None:
+    """Set the EXR output bit depth used by all EXR writers."""
+    global EXR_BIT_DEPTH
+    if mode not in EXR_BIT_DEPTHS:
+        raise ValueError(f"exr_bit_depth '{mode}' is invalid. Choose one of {EXR_BIT_DEPTHS}")
+    EXR_BIT_DEPTH = mode
+
+
+def exr_pixel_type():
+    """Imath pixel type for the current EXR output bit depth."""
+    kind = Imath.PixelType.HALF if EXR_BIT_DEPTH == "half" else Imath.PixelType.FLOAT
+    return Imath.PixelType(kind)
+
+
+def exr_pixel_bytes(arr: np.ndarray) -> bytes:
+    """Cast a float array to the current EXR bit depth and return its raw bytes."""
+    dtype = np.float16 if EXR_BIT_DEPTH == "half" else np.float32
+    return np.ascontiguousarray(arr, dtype=dtype).tobytes()
+
+
 def read_exr_size(path: str) -> Tuple[int, int]:
     """Lấy (h, w) từ header EXR, không đọc pixel."""
     if not _OPENEXR_AVAILABLE:
@@ -552,21 +577,21 @@ def save_depth_visual_as_exr_sequence_util(
             try:
                 header = OpenEXR.Header(width, height)
                 if frame_data_float32.ndim == 2:
-                    header['channels'] = {'Z': Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT))}
-                    pixel_data = {'Z': frame_data_float32.tobytes()}
+                    header['channels'] = {'Z': Imath.Channel(exr_pixel_type())}
+                    pixel_data = {'Z': exr_pixel_bytes(frame_data_float32)}
                 elif frame_data_float32.ndim == 3 and frame_data_float32.shape[-1] == 1:
-                    header['channels'] = {'Z': Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT))}
-                    pixel_data = {'Z': frame_data_float32.squeeze().tobytes()}
+                    header['channels'] = {'Z': Imath.Channel(exr_pixel_type())}
+                    pixel_data = {'Z': exr_pixel_bytes(frame_data_float32.squeeze())}
                 elif frame_data_float32.ndim == 3 and frame_data_float32.shape[-1] == 3:
                     header['channels'] = {
-                        'R': Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT)),
-                        'G': Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT)),
-                        'B': Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT))
+                        'R': Imath.Channel(exr_pixel_type()),
+                        'G': Imath.Channel(exr_pixel_type()),
+                        'B': Imath.Channel(exr_pixel_type())
                     }
                     pixel_data = {
-                        'R': frame_data_float32[:, :, 0].tobytes(),
-                        'G': frame_data_float32[:, :, 1].tobytes(),
-                        'B': frame_data_float32[:, :, 2].tobytes()
+                        'R': exr_pixel_bytes(frame_data_float32[:, :, 0]),
+                        'G': exr_pixel_bytes(frame_data_float32[:, :, 1]),
+                        'B': exr_pixel_bytes(frame_data_float32[:, :, 2])
                     }
                 else:
                     _logger.error(f"Unsupported frame shape: {frame_data_float32.shape}")
@@ -624,21 +649,21 @@ def save_depth_visual_as_single_exr_util(
         pixel_data = {}
 
         if frame_float32.ndim == 2:
-            header['channels'] = {'Z': Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT))}
-            pixel_data = {'Z': frame_float32.tobytes()}
+            header['channels'] = {'Z': Imath.Channel(exr_pixel_type())}
+            pixel_data = {'Z': exr_pixel_bytes(frame_float32)}
         elif frame_float32.ndim == 3 and frame_float32.shape[-1] == 1:
-            header['channels'] = {'Z': Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT))}
-            pixel_data = {'Z': frame_float32.squeeze().tobytes()}
+            header['channels'] = {'Z': Imath.Channel(exr_pixel_type())}
+            pixel_data = {'Z': exr_pixel_bytes(frame_float32.squeeze())}
         elif frame_float32.ndim == 3 and frame_float32.shape[-1] == 3:
             header['channels'] = {
-                'R': Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT)),
-                'G': Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT)),
-                'B': Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT))
+                'R': Imath.Channel(exr_pixel_type()),
+                'G': Imath.Channel(exr_pixel_type()),
+                'B': Imath.Channel(exr_pixel_type())
             }
             pixel_data = {
-                'R': frame_float32[:, :, 0].tobytes(),
-                'G': frame_float32[:, :, 1].tobytes(),
-                'B': frame_float32[:, :, 2].tobytes()
+                'R': exr_pixel_bytes(frame_float32[:, :, 0]),
+                'G': exr_pixel_bytes(frame_float32[:, :, 1]),
+                'B': exr_pixel_bytes(frame_float32[:, :, 2])
             }
         
         exr_file = OpenEXR.OutputFile(output_exr_filepath, header)
