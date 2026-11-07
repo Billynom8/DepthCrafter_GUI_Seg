@@ -453,17 +453,20 @@ def _determine_output_path(
         raise ValueError("Could not determine a valid output path.")
     return output_path_final
 
-def _save_output_to_disk(video_data: np.ndarray, save_path: str, out_format: str, fps_val: float):
+def _save_output_to_disk(video_data: np.ndarray, save_path: str, out_format: str, fps_val: float, file_stem: Optional[str] = None):
     _logger.info(f"Saving merged output to: {save_path} (Format: {out_format}) FPS: {fps_val:.2f}")
     if video_data is None or video_data.size == 0:
         _logger.critical("Video data for saving is empty.")
         raise ValueError("Video data for saving is empty.")
 
+    # Sequence frames are named "<source>_Z_<frame>" so they match the source clip;
+    # without a source name they fall back to "frame_<frame>".
+    frame_prefix = f"{file_stem}_Z" if file_stem else "frame"
     try:
         if out_format == "png_sequence":
             for i, frame_f in enumerate(video_data):
                 frame_u16 = (np.clip(frame_f, 0, 1) * 65535.0).astype(np.uint16)
-                imageio.imwrite(os.path.join(save_path, f"frame_{i:05d}.png"), frame_u16)
+                imageio.imwrite(os.path.join(save_path, f"{frame_prefix}_{i:05d}.png"), frame_u16)
             _logger.debug(f"Successfully saved {len(video_data)} PNGs in {save_path}")
         elif out_format == "exr_sequence":
             if not _HAS_OPENEXR:
@@ -472,7 +475,7 @@ def _save_output_to_disk(video_data: np.ndarray, save_path: str, out_format: str
             saved_count, failed_count = 0,0
             for i, frame_f in enumerate(video_data):
                 try:
-                    save_single_frame_exr(frame_f.astype(np.float32), os.path.join(save_path, f"frame_{i:05d}.exr"))
+                    save_single_frame_exr(frame_f.astype(np.float32), os.path.join(save_path, f"{frame_prefix}_{i:05d}.exr"))
                     saved_count +=1
                 except Exception as e_exr_frame:
                     _logger.error(f"  ERROR saving EXR frame {i}: {e_exr_frame}. Skipping.")
@@ -601,7 +604,7 @@ def merge_depth_segments(
             output_filename_override_base # Use the potentially overridden base for first output
         )
         
-        _save_output_to_disk(standard_video_to_save, standard_output_path, output_format, final_fps)
+        _save_output_to_disk(standard_video_to_save, standard_output_path, output_format, final_fps, file_stem=original_basename_from_meta)
         actual_saved_output_path = standard_output_path # This is the primary output path
 
         # --- SECOND OUTPUT (if enabled): Robust Global Normalization & Save ---
@@ -642,7 +645,7 @@ def merge_depth_segments(
                 file_extension_for_path,
                 final_filename_base_override=robust_output_base_name # Pass the new base name for this second output
             )
-            _save_output_to_disk(robust_video_to_save, robust_output_path, output_format, final_fps)
+            _save_output_to_disk(robust_video_to_save, robust_output_path, output_format, final_fps, file_stem=original_basename_from_meta)
 
     except Exception as e:
         _logger.critical(f"CRITICAL ERROR during merge process: {e}", exc_info=True)
