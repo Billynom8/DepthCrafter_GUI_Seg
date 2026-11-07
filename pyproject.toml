@@ -24,6 +24,7 @@ dependencies = [
     "imageio==2.37.0",
     "Imath==0.0.2",
     "ttkthemes>=3.3.0",
+    "tkinterdnd2>=0.4.0",
 ]
 
 [[tool.uv.index]]

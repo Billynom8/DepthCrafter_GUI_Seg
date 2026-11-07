@@ -586,7 +586,7 @@ def save_depth_visual_as_exr_sequence_util(
 
         for i in range(num_frames):
             frame_data_float32 = depth_frames_normalized[i].astype(np.float32)
-            output_exr_filepath = os.path.join(exr_sequence_output_dir, f"frame_{i:05d}.exr")
+            output_exr_filepath = os.path.join(exr_sequence_output_dir, f"{sequence_subfolder_name}_{i:05d}.exr")
 
             try:
                 header = OpenEXR.Header(width, height)

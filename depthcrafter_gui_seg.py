@@ -6,6 +6,14 @@ import glob
 import shutil
 import json
 import tkinter as tk
+import tkinter.font as tkfont
+try:
+    from tkinterdnd2 import TkinterDnD, DND_FILES
+    _DND_AVAILABLE = True
+except ImportError:
+    TkinterDnD = None
+    DND_FILES = None
+    _DND_AVAILABLE = False
 from tkinter import Toplevel, Label
 from tkinter import filedialog, messagebox, ttk
 import queue # Still needed for progress updates
@@ -33,6 +41,7 @@ from depthcrafter.gui_video_utils import (
 from depthcrafter.gui_io_utils import (
     get_sidecar_json_filename,
     get_image_sequence_metadata,
+    get_video_stream_info,
     get_single_image_metadata,
     set_exr_default_transform,
     set_exr_bit_depth,
@@ -262,6 +271,9 @@ class DepthCrafterGUI:
 
         self.load_config() 
         self.stop_event = threading.Event()
+        self.stop_after_shot_event = threading.Event()
+        self.queue_items = []      # shot queue, in run order
+        self.queue_by_iid = {}     # treeview iid -> queue item
         self.processing_thread = None
         self.secondary_output_widgets_references = []
         self._load_help_content()
@@ -1264,6 +1276,9 @@ class DepthCrafterGUI:
         if hasattr(self, 'cancel_button') and self.cancel_button:
              try: self.cancel_button.configure(state=cancel_state)
              except tk.TclError: pass
+        if hasattr(self, 'stop_after_button') and self.stop_after_button:
+             try: self.stop_after_button.configure(state=cancel_state)
+             except tk.TclError: pass
 
         if hasattr(self, 'file_menu'):
             try:
@@ -1472,6 +1487,54 @@ class DepthCrafterGUI:
     def create_widgets(self):
         self.widgets_to_disable_during_processing = []
         
+        # --- Shot Queue panel (right side, packed first so it keeps its column) ---
+        queue_frame = ttk.LabelFrame(self.root, text="Shot Queue")
+        queue_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(5,10), pady=5)
+        self.queue_frame = queue_frame
+        _create_hover_tooltip(queue_frame, "queue_panel")
+        hint = ("Drag EXR/PNG sequence folders or video files here, or use the buttons."
+                if _DND_AVAILABLE else
+                "Drag & drop needs tkinterdnd2 (pip install tkinterdnd2). Use the buttons below.")
+        ttk.Label(queue_frame, text=hint, wraplength=360, justify=tk.LEFT).pack(anchor="w", padx=5, pady=(2,4))
+        tree_wrap = ttk.Frame(queue_frame); tree_wrap.pack(fill=tk.BOTH, expand=True, padx=5)
+        self.queue_tree = ttk.Treeview(tree_wrap, columns=("status", "name", "frames"), show="headings",
+                                       selectmode="extended", height=20)
+        self.queue_tree.heading("status", text="status")
+        self.queue_tree.heading("name", text="name")
+        self.queue_tree.heading("frames", text="frames")
+        self.queue_tree.column("status", width=80, anchor="center", stretch=False)
+        self.queue_tree.column("name", width=220, anchor="w")
+        self.queue_tree.column("frames", width=70, anchor="e", stretch=False)
+        q_vsb = ttk.Scrollbar(tree_wrap, orient="vertical", command=self.queue_tree.yview)
+        self.queue_tree.configure(yscrollcommand=q_vsb.set)
+        self.queue_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        q_vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        base_font = "TkDefaultFont"
+        self._font_working = tkfont.Font(root=self.root, font=base_font); self._font_working.configure(weight="bold")
+        self._font_done = tkfont.Font(root=self.root, font=base_font); self._font_done.configure(overstrike=True)
+        self.queue_tree.tag_configure("working", font=self._font_working)
+        self.queue_tree.tag_configure("done", font=self._font_done, foreground="gray")
+        self.queue_tree.tag_configure("error", foreground="#c0392b")
+        q_btns = ttk.Frame(queue_frame); q_btns.pack(fill=tk.X, padx=5, pady=4)
+        self.queue_add_files_btn = ttk.Button(q_btns, text="Add Files...", command=self.queue_add_files_dialog, width=12)
+        self.queue_add_folder_btn = ttk.Button(q_btns, text="Add Folder...", command=self.queue_add_folder_dialog, width=12)
+        self.queue_remove_btn = ttk.Button(q_btns, text="Remove", command=self.queue_remove_selected, width=12)
+        self.queue_clear_btn = ttk.Button(q_btns, text="Clear Done", command=self.queue_clear_done, width=12)
+        self.queue_add_files_btn.grid(row=0, column=0, padx=2, pady=2, sticky="ew")
+        self.queue_add_folder_btn.grid(row=0, column=1, padx=2, pady=2, sticky="ew")
+        self.queue_remove_btn.grid(row=1, column=0, padx=2, pady=2, sticky="ew")
+        self.queue_clear_btn.grid(row=1, column=1, padx=2, pady=2, sticky="ew")
+        self.widgets_to_disable_during_processing.extend([
+            self.queue_add_files_btn, self.queue_add_folder_btn, self.queue_remove_btn, self.queue_clear_btn])
+        if _DND_AVAILABLE:
+            try:
+                TkinterDnD._require(self.root)
+                for w in (queue_frame, self.queue_tree):
+                    w.drop_target_register(DND_FILES)
+                    w.dnd_bind("<<Drop>>", self._on_queue_drop)
+            except Exception as e_dnd:
+                _logger.warning(f"Drag & drop unavailable for the queue: {e_dnd}")
+
         # --- Input Source Frame ---
         dir_frame = ttk.LabelFrame(self.root, text="Input Source")
         dir_frame.pack(fill="x", padx=10, pady=5, expand=False)        
@@ -1874,6 +1937,11 @@ class DepthCrafterGUI:
         self.cancel_button.pack(side=tk.LEFT)
         _create_hover_tooltip(self.cancel_button, "cancel_button")
 
+        stop_after_frame = ttk.Frame(button_container_frame); stop_after_frame.pack(side=tk.LEFT, padx=(2,2))
+        self.stop_after_button = ttk.Button(stop_after_frame, text="Stop After Shot", command=self.request_stop_after_shot, width=15, state=tk.DISABLED)
+        self.stop_after_button.pack(side=tk.LEFT)
+        _create_hover_tooltip(self.stop_after_button, "stop_after_button")
+
         remerge_frame = ttk.Frame(button_container_frame); remerge_frame.pack(side=tk.LEFT, padx=(2,2))
         self.remerge_button = ttk.Button(remerge_frame, text="Re-Merge Segments", command=self.re_merge_from_gui, width=18)
         self.remerge_button.pack(side=tk.LEFT)
@@ -1960,6 +2028,8 @@ class DepthCrafterGUI:
                     self.status_message_var.set(content)
                 elif msg_type == "set_ui_state":
                     self._set_ui_processing_state(content)
+                elif msg_type == "queue_status":
+                    self._set_queue_row_status(*content)
             except queue.Empty:
                 break
             except Exception as e:
@@ -2045,9 +2115,211 @@ class DepthCrafterGUI:
         self.processing_thread = threading.Thread(target=self._execute_re_merge_wrapper, args=(args,), daemon=True); self.processing_thread.start()
         self.root.after(100, self.process_queue)
 
+    # ------------------------------------------------------------------
+    # Shot queue
+    # ------------------------------------------------------------------
+    def _is_queueable_path(self, path: str) -> bool:
+        if os.path.isdir(path):
+            return self._is_image_sequence_folder(path)
+        ext = os.path.splitext(path)[1].lower()
+        return os.path.isfile(path) and any(ext in v.replace("*", "") for v in self.VIDEO_EXTENSIONS)
+
+    def _queue_add_many(self, paths):
+        added = 0
+        for raw in paths:
+            p = os.path.normpath(raw)
+            if not os.path.exists(p):
+                continue
+            if os.path.isdir(p) and not self._is_image_sequence_folder(p):
+                # A batch folder: take its shot folders and videos one level down
+                candidates = [os.path.join(p, c) for c in sorted(os.listdir(p))]
+                candidates = [c for c in candidates if self._is_queueable_path(c)]
+            else:
+                candidates = [p]
+            for c in candidates:
+                if self._queue_add_path(c):
+                    added += 1
+        self.status_message_var.set(f"Added {added} shot(s) to the queue." if added else
+                                    "Nothing added: drop EXR/PNG sequence folders or video files.")
+        return added
+
+    def _queue_add_path(self, path: str) -> bool:
+        if not self._is_queueable_path(path):
+            _logger.info(f"Queue: skipped '{path}' (not a sequence folder or video file).")
+            return False
+        if any(os.path.normcase(it["path"]) == os.path.normcase(path) for it in self.queue_items):
+            _logger.info(f"Queue: '{path}' is already in the queue.")
+            return False
+        if os.path.isdir(path):
+            item_type = "image_sequence_folder"
+            name = os.path.basename(os.path.normpath(path))
+            frames = self._count_sequence_frames(path)
+        else:
+            item_type = "video_file"
+            name = os.path.splitext(os.path.basename(path))[0]
+            frames = self._count_video_frames(path)
+        item = {"path": path, "type": item_type, "basename": name, "name": name,
+                "frames": frames, "status": "pending", "iid": None}
+        item["iid"] = self.queue_tree.insert("", tk.END, values=self._queue_row_values(item))
+        self.queue_items.append(item)
+        self.queue_by_iid[item["iid"]] = item
+        self._queue_refresh_row(item)
+        return True
+
+    def _count_sequence_frames(self, folder: str):
+        try:
+            count = get_image_sequence_metadata(folder, -1)[0]
+            return int(count) if count else None
+        except Exception as e:
+            _logger.warning(f"Queue: could not count frames in '{folder}': {e}")
+            return None
+
+    def _count_video_frames(self, path: str):
+        try:
+            info = get_video_stream_info(path)
+            if info and info[0]:
+                n = int(info[0].get("nb_frames") or 0)
+                return n if n > 0 else None
+        except Exception as e:
+            _logger.warning(f"Queue: could not read frame count of '{path}': {e}")
+        return None
+
+    def _queue_row_values(self, item):
+        frames_txt = str(item["frames"]) if item["frames"] is not None else "?"
+        return (item["status"], item["name"], frames_txt)
+
+    def _queue_refresh_row(self, item):
+        if not item.get("iid") or not self.queue_tree.exists(item["iid"]):
+            return
+        tags = (item["status"],) if item["status"] in ("working", "done", "error") else ()
+        self.queue_tree.item(item["iid"], values=self._queue_row_values(item), tags=tags)
+
+    def _queue_pending_specs(self):
+        """Specs for every shot that still needs running, in queue order."""
+        specs = []
+        for it in self.queue_items:
+            # "working" = left over from an interrupted run; "error" = failed last time, retried on Start
+            if it["status"] in ("pending", "working", "error"):
+                it["status"] = "pending"
+                self._queue_refresh_row(it)
+                specs.append({"path": it["path"], "type": it["type"],
+                              "basename": it["basename"], "queue_iid": it["iid"]})
+        return specs
+
+    def _queue_report(self, spec, status: str):
+        """Called from the worker thread; the UI thread applies it via process_queue."""
+        iid = spec.get("queue_iid") if spec else None
+        if iid:
+            self.message_queue.put(("queue_status", (iid, status)))
+
+    def _set_queue_row_status(self, iid: str, status: str):
+        item = self.queue_by_iid.get(iid)
+        if item:
+            item["status"] = status
+            self._queue_refresh_row(item)
+
+    def _clear_vram_between_shots(self):
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            try:
+                torch.cuda.ipc_collect()
+            except Exception:
+                pass
+            _logger.info("VRAM cache cleared between shots.")
+
+    def _on_queue_drop(self, event):
+        if self.processing_thread and self.processing_thread.is_alive():
+            self.status_message_var.set("Queue is locked while processing.")
+            return event.action
+        self._queue_add_many(self.root.tk.splitlist(event.data))
+        return event.action
+
+    def queue_add_files_dialog(self):
+        if self.processing_thread and self.processing_thread.is_alive(): return
+        files = filedialog.askopenfilenames(title="Add video files to the queue",
+                                            filetypes=[("Video files", "*.mp4 *.mov *.mkv *.avi *.webm *.flv *.gif"), ("All files", "*.*")])
+        if files: self._queue_add_many(list(files))
+
+    def queue_add_folder_dialog(self):
+        if self.processing_thread and self.processing_thread.is_alive(): return
+        folder = filedialog.askdirectory(title="Add a sequence folder (or a folder of shots) to the queue")
+        if folder: self._queue_add_many([folder])
+
+    def queue_remove_selected(self):
+        if self.processing_thread and self.processing_thread.is_alive(): return
+        for iid in self.queue_tree.selection():
+            item = self.queue_by_iid.get(iid)
+            if item and item["status"] == "working":
+                continue
+            if item:
+                self.queue_items.remove(item)
+                del self.queue_by_iid[iid]
+            self.queue_tree.delete(iid)
+
+    def queue_clear_done(self):
+        if self.processing_thread and self.processing_thread.is_alive(): return
+        for item in list(self.queue_items):
+            if item["status"] == "done":
+                self.queue_items.remove(item)
+                del self.queue_by_iid[item["iid"]]
+                self.queue_tree.delete(item["iid"])
+
+    def request_stop_after_shot(self):
+        if not (self.processing_thread and self.processing_thread.is_alive()):
+            return
+        self.stop_after_shot_event.set()
+        self.stop_after_button.configure(state=tk.DISABLED)
+        self.status_message_var.set("Will stop after the current shot finishes.")
+        _logger.info("Stop after shot requested: the current shot will finish, then the queue halts.")
+
+    def _launch_processing(self, sources_to_process_specs):
+        # --- NEW SEED GENERATION GUARD ---
+        gui_seed_setting = self.seed.get()
+        effective_seed_for_run = gui_seed_setting
+        if effective_seed_for_run < 0:
+            effective_seed_for_run = random.randint(0, 2**32 - 1)
+            _logger.debug(f"GUI: Seed was set to {gui_seed_setting} (negative). Generating a new random seed for this run: {effective_seed_for_run}")
+        else:
+            _logger.debug(f"GUI: Using user-specified seed: {effective_seed_for_run}")
+        
+        # --- PHASE 1: FAST SCAN FOR TOTAL SOURCES (REPLACING HEAVY METADATA/SEGMENT DEFINITION) ---
+        final_jobs_to_process_sources = sources_to_process_specs # The list of file/folder specs
+
+        if final_jobs_to_process_sources:
+            # --- ADDED THESE LINES TO RESET PREVIOUS JOB INFO ---
+            self.current_filename_var.set("N/A")
+            self.current_resolution_var.set("N/A")
+            self.current_frames_var.set("N/A")
+            # --------------------------------------------------
+            set_exr_default_transform(self.exr_transform_var.get())
+            set_exr_bit_depth(self.exr_bit_depth_var.get())
+            set_full_output_format(self.full_output_format_var.get())
+            self.status_message_var.set(f"Starting processing {len(final_jobs_to_process_sources)} files/sequences...")
+            self.progress["value"] = 0 # Initialize progress bar value
+            self.progress["maximum"] = len(final_jobs_to_process_sources) # Set progress bar max to total files/sources
+            self._set_ui_processing_state(True)
+            
+            # Pass the list of source specs. The ffprobe/segment definition will happen inside start_processing.
+            self.processing_thread = threading.Thread(target=self._start_processing_wrapper, 
+                                                      args=(final_jobs_to_process_sources, effective_seed_for_run), 
+                                                      daemon=True)
+            self.processing_thread.start()
+            self.root.after(100, self.process_queue) # Start queue processing for progress updates
+        else:
+            _logger.info("No videos/segments to process after considering existing data and user choices (or all skipped).")
+
     def start_thread(self):
         if self.processing_thread and self.processing_thread.is_alive():
             _logger.warning("Processing is already running.")
+            return
+
+        # Queue has pending shots: run the queue (input folder field is ignored)
+        pending_queue_specs = self._queue_pending_specs()
+        if pending_queue_specs:
+            self.effective_move_original_on_completion = False  # never move shots that were dragged in
+            _logger.info(f"Running shot queue: {len(pending_queue_specs)} shot(s).")
+            self._launch_processing(pending_queue_specs)
             return
 
         input_path_str = self.input_dir_or_file_var.get()
@@ -2128,43 +2400,11 @@ class DepthCrafterGUI:
             _logger.warning(f"GUI: No valid video files or image sequences found in '{input_path_str}' for mode '{self.current_input_mode}'.")
             return
         
-        # --- NEW SEED GENERATION GUARD ---
-        gui_seed_setting = self.seed.get()
-        effective_seed_for_run = gui_seed_setting
-        if effective_seed_for_run < 0:
-            effective_seed_for_run = random.randint(0, 2**32 - 1)
-            _logger.debug(f"GUI: Seed was set to {gui_seed_setting} (negative). Generating a new random seed for this run: {effective_seed_for_run}")
-        else:
-            _logger.debug(f"GUI: Using user-specified seed: {effective_seed_for_run}")
-        
-        # --- PHASE 1: FAST SCAN FOR TOTAL SOURCES (REPLACING HEAVY METADATA/SEGMENT DEFINITION) ---
-        final_jobs_to_process_sources = sources_to_process_specs # The list of file/folder specs
-
-        if final_jobs_to_process_sources:
-            # --- ADDED THESE LINES TO RESET PREVIOUS JOB INFO ---
-            self.current_filename_var.set("N/A")
-            self.current_resolution_var.set("N/A")
-            self.current_frames_var.set("N/A")
-            # --------------------------------------------------
-            set_exr_default_transform(self.exr_transform_var.get())
-            set_exr_bit_depth(self.exr_bit_depth_var.get())
-            set_full_output_format(self.full_output_format_var.get())
-            self.status_message_var.set(f"Starting processing {len(final_jobs_to_process_sources)} files/sequences...")
-            self.progress["value"] = 0 # Initialize progress bar value
-            self.progress["maximum"] = len(final_jobs_to_process_sources) # Set progress bar max to total files/sources
-            self._set_ui_processing_state(True)
-            
-            # Pass the list of source specs. The ffprobe/segment definition will happen inside start_processing.
-            self.processing_thread = threading.Thread(target=self._start_processing_wrapper, 
-                                                      args=(final_jobs_to_process_sources, effective_seed_for_run), 
-                                                      daemon=True)
-            self.processing_thread.start()
-            self.root.after(100, self.process_queue) # Start queue processing for progress updates
-        else:
-            _logger.info("No videos/segments to process after considering existing data and user choices (or all skipped).")
+        self._launch_processing(sources_to_process_specs)
 
     def start_processing(self, source_specs_to_process, effective_seed_for_run):
         self.stop_event.clear()
+        self.stop_after_shot_event.clear()
         
         # Progress max is already set to len(source_specs_to_process) in start_thread
         _logger.debug(f"Starting lazy batch processing for {len(source_specs_to_process)} sources...")
@@ -2202,11 +2442,26 @@ class DepthCrafterGUI:
         total_sources_processed = 0
         
         # 2. Main Loop: Process one source (file/folder) at a time
+        open_queue_spec = None  # shot whose queue row is currently "working"
+        open_queue_result = "done"  # final status of that shot: "done" or "error"
         for source_idx, source_spec in enumerate(source_specs_to_process):
+            # Each shot is reported when the NEXT iteration starts: several skip branches
+            # bypass the end of the loop body, so this is the one place every shot passes.
+            if open_queue_spec is not None:
+                self._queue_report(open_queue_spec, "pending" if self.stop_event.is_set() else open_queue_result)
+                self._clear_vram_between_shots()
+                open_queue_spec = None
             if self.stop_event.is_set():
                 _logger.info("Processing cancelled by user.")
                 self.status_message_var.set("Cancelled.")
                 break
+            if self.stop_after_shot_event.is_set():
+                _logger.info("Stop after shot: queue halted before the next shot.")
+                self.status_message_var.set("Stopped after shot as requested.")
+                break
+            self._queue_report(source_spec, "working")
+            open_queue_spec = source_spec
+            open_queue_result = "done"
 
             current_video_path = source_spec["path"] 
             original_basename = source_spec["basename"]
@@ -2232,6 +2487,7 @@ class DepthCrafterGUI:
                 source_type_for_define = "single_image_file"
             else:
                 _logger.error(f"Lazy Job Definition: Unknown source_spec type '{current_gui_mode}' for basename '{original_basename}'. Skipping.")
+                open_queue_result = "error"
                 total_sources_processed += 1
                 self.message_queue.put(("progress", total_sources_processed))
                 continue
@@ -2254,6 +2510,7 @@ class DepthCrafterGUI:
                 
                 # Update status message if this is the only file, but continue the loop otherwise
                 self.status_message_var.set(f"Error: Missing file or metadata fail for {original_basename}. Skipping.")
+                open_queue_result = "error"
                 
                 total_sources_processed += 1
                 self.message_queue.put(("progress", total_sources_processed))
@@ -2261,6 +2518,7 @@ class DepthCrafterGUI:
 
             if not base_job_info_initial:
                 _logger.info(f"Skipping {original_basename}: Issues in metadata extraction/segment definition.")
+                open_queue_result = "error"
                 total_sources_processed += 1
                 self.message_queue.put(("progress", total_sources_processed))
                 continue
@@ -2276,6 +2534,7 @@ class DepthCrafterGUI:
                 if not all_potential_segments_for_video:
                     reason_skip = "Too short or invalid overlap/settings" if base_job_info_initial.get("original_video_raw_frame_count", 0) > 0 else "Source issue or zero frames/duration"
                     _logger.info(f"Skipping {original_basename}: No segments defined by settings (Reason: {reason_skip}).")
+                    open_queue_result = "error"
                     total_sources_processed += 1
                     self.message_queue.put(("progress", total_sources_processed))
                     continue
@@ -2293,6 +2552,7 @@ class DepthCrafterGUI:
                 
                 if not jobs_to_process_for_this_source and not current_video_base_info_ref.get("pre_existing_successful_jobs"):
                      _logger.info(f"Skipping {original_basename}: Job definition/resume resulted in no segments to process.")
+                     open_queue_result = "error"
                      total_sources_processed += 1
                      self.message_queue.put(("progress", total_sources_processed))
                      continue
@@ -2375,6 +2635,7 @@ class DepthCrafterGUI:
                     master_meta_for_this_vid["completed_successful_jobs"] += 1
                 else:
                     master_meta_for_this_vid["completed_failed_jobs"] += 1
+                    open_queue_result = "error"
             
             # E. Finalize the source (merge/cleanup/move original) if all its jobs are accounted for
             total_accounted_for_vid = master_meta_for_this_vid["completed_successful_jobs"] + master_meta_for_this_vid["completed_failed_jobs"]
@@ -2390,6 +2651,9 @@ class DepthCrafterGUI:
             total_sources_processed += 1
             self.message_queue.put(("progress", total_sources_processed))
 
+        if open_queue_spec is not None:
+            self._queue_report(open_queue_spec, "pending" if self.stop_event.is_set() else open_queue_result)
+            self._clear_vram_between_shots()
         if not self.stop_event.is_set():
             _logger.info("All processing sources complete!")
             self.status_message_var.set("Processing Finished.")

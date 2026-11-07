@@ -149,5 +149,11 @@
   },
   "full_output_format": {
     "text": "Output format when 'Process as Segments' is OFF.\nmp4: H.264 video (default).\nmain10_mp4: 10-bit H.265 video, smaller and smoother for review.\npng_sequence: one 16-bit PNG per frame, in a sub-folder.\nexr_sequence: one EXR per frame, uses the EXR Bit Depth setting.\nSequence outputs use min-max normalization over the whole clip, like the MP4."
+  },
+  "queue_panel": {
+    "text": "Shot queue. Drag EXR/PNG sequence folders or video files here (or use the buttons). Start runs the pending shots in order, one after another, with VRAM cleared between shots. Done shots are struck through; the running shot is bold. When the queue has pending shots, Start uses it instead of the Input Folder field."
+  },
+  "stop_after_button": {
+    "text": "Finish the shot that is running, then stop. Remaining shots stay pending and can run on the next Start."
   }
 }
