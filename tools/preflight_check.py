@@ -5,7 +5,8 @@ fetched automatically, skips what is already present, and writes
 MISSING_MANUAL.txt for anything that still has to be installed by hand.
 
 Run from the project root with the project's own interpreter:
-    .venv\\Scripts\\python.exe tools\\preflight_check.py [--no-download]
+    Windows:        .venv\\Scripts\\python.exe tools\\preflight_check.py [--no-download]
+    Linux / macOS:  .venv/bin/python tools/preflight_check.py [--no-download]
 
 Exit code: 0 when nothing is missing, 1 when manual steps remain.
 """
@@ -13,9 +14,11 @@ Exit code: 0 when nothing is missing, 1 when manual steps remain.
 import argparse
 import importlib.util
 import os
+import platform
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import urllib.request
 import zipfile
@@ -24,17 +27,28 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 MANUAL_FILE = PROJECT_DIR / "MISSING_MANUAL.txt"
 FFMPEG_BIN_DIR = PROJECT_DIR / "tools" / "ffmpeg" / "bin"
-FFMPEG_ZIP_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+EXE_SUFFIX = ".exe" if sys.platform == "win32" else ""
 FFMPEG_MANUAL_URL = "https://www.gyan.dev/ffmpeg/builds/"
+
+# Static ffmpeg builds from BtbN. Other platforms (macOS, non-x86 Linux) have no automatic source.
+if sys.platform == "win32":
+    FFMPEG_ARCHIVE_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+elif sys.platform.startswith("linux") and platform.machine() in ("x86_64", "AMD64"):
+    FFMPEG_ARCHIVE_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
+else:
+    FFMPEG_ARCHIVE_URL = None
+
 # Triton 3.5.1 matches the Triton that PyTorch 2.9.x uses on Linux; a cp312 win_amd64 wheel exists on PyPI.
+# Linux gets Triton from torch itself, so only Windows needs this step.
 TRITON_SPEC = "triton-windows==3.5.1.post24"
 
 # Python packages are installed by `uv sync`; here we only check they import.
 REQUIRED_MODULES = [
     "numpy", "PIL", "torch", "diffusers", "transformers", "accelerate",
-    "huggingface_hub", "OpenEXR", "Imath", "imageio", "mediapy", "decord",
-    "tkinterdnd2", "ttkthemes",
+    "huggingface_hub", "OpenEXR", "Imath", "imageio", "mediapy", "tkinterdnd2", "ttkthemes",
 ]
+# decord has no wheel on Apple Silicon or aarch64 Linux; without it the app uses an ffmpeg-based reader.
+OPTIONAL_MODULES = ["decord"]
 
 # repo id, allow_patterns (None = whole repo), files that must exist after download, description, gated
 HF_MODELS = [
@@ -56,21 +70,44 @@ def ensure_project_ffmpeg_on_path() -> None:
         os.environ["PATH"] = str(FFMPEG_BIN_DIR) + os.pathsep + os.environ.get("PATH", "")
 
 
+def ffmpeg_manual_hint() -> str:
+    if sys.platform == "win32":
+        return (f"Get a Windows build from {FFMPEG_MANUAL_URL} and copy ffmpeg.exe and "
+                f"ffprobe.exe into {FFMPEG_BIN_DIR}")
+    if sys.platform == "darwin":
+        return f"Install it with Homebrew (brew install ffmpeg), or copy ffmpeg and ffprobe into {FFMPEG_BIN_DIR}"
+    return f"Install it with your package manager (e.g. sudo apt install ffmpeg), or copy ffmpeg and ffprobe into {FFMPEG_BIN_DIR}"
+
+
 def download_ffmpeg(dest_bin: Path) -> None:
-    """Download the BtbN Windows build and copy ffmpeg.exe and ffprobe.exe into dest_bin."""
+    """Download the static build for this platform and copy ffmpeg and ffprobe into dest_bin."""
+    if FFMPEG_ARCHIVE_URL is None:
+        raise RuntimeError("no automatic ffmpeg download for this platform")
+    wanted = {f"ffmpeg{EXE_SUFFIX}", f"ffprobe{EXE_SUFFIX}"}
     dest_bin.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
-        zip_path = Path(tmp) / "ffmpeg.zip"
-        urllib.request.urlretrieve(FFMPEG_ZIP_URL, zip_path)
-        with zipfile.ZipFile(zip_path) as archive:
-            for member in archive.namelist():
-                name = os.path.basename(member)
-                if "/bin/" in member and name in ("ffmpeg.exe", "ffprobe.exe"):
-                    with archive.open(member) as src, open(dest_bin / name, "wb") as dst:
-                        shutil.copyfileobj(src, dst)
-    for exe in ("ffmpeg.exe", "ffprobe.exe"):
-        if not (dest_bin / exe).is_file():
-            raise RuntimeError(f"{exe} not found in the downloaded archive")
+        archive_path = Path(tmp) / FFMPEG_ARCHIVE_URL.rsplit("/", 1)[-1]
+        urllib.request.urlretrieve(FFMPEG_ARCHIVE_URL, archive_path)
+        if archive_path.suffix == ".zip":
+            with zipfile.ZipFile(archive_path) as archive:
+                for member in archive.namelist():
+                    name = os.path.basename(member)
+                    if "/bin/" in member and name in wanted:
+                        with archive.open(member) as src, open(dest_bin / name, "wb") as dst:
+                            shutil.copyfileobj(src, dst)
+        else:
+            with tarfile.open(archive_path, "r:xz") as archive:
+                for member in archive.getmembers():
+                    name = os.path.basename(member.name)
+                    if member.isfile() and "/bin/" in member.name and name in wanted:
+                        with archive.extractfile(member) as src, open(dest_bin / name, "wb") as dst:
+                            shutil.copyfileobj(src, dst)
+    for name in wanted:
+        target = dest_bin / name
+        if not target.is_file():
+            raise RuntimeError(f"{name} not found in the downloaded archive")
+        if EXE_SUFFIX == "":
+            target.chmod(0o755)
 
 
 def ensure_triton() -> str:
@@ -135,28 +172,29 @@ def main() -> int:
     if missing_modules:
         print("  missing: " + ", ".join(missing_modules))
         manual.append("Python packages missing: " + ", ".join(missing_modules)
-                      + "\n  Fix: run `uv sync` in the project folder (the .bat does this automatically).")
+                      + "\n  Fix: run `uv sync` in the project folder (run.sh and the .bat do this automatically).")
     else:
         print("  all present")
+    missing_optional = [m for m in OPTIONAL_MODULES if not have_module(m)]
+    if missing_optional:
+        print("  optional, not installed: " + ", ".join(missing_optional) + " (ffmpeg reader is used instead)")
 
     print("== ffmpeg / ffprobe")
     ensure_project_ffmpeg_on_path()
     if shutil.which("ffmpeg") and shutil.which("ffprobe"):
         print("  present")
-    elif download:
-        print("  not found, downloading the Windows build...")
+    elif download and FFMPEG_ARCHIVE_URL:
+        print("  not found, downloading a static build...")
         try:
             download_ffmpeg(FFMPEG_BIN_DIR)
             ensure_project_ffmpeg_on_path()
             print(f"  downloaded to {FFMPEG_BIN_DIR}")
         except Exception as exc:
             print(f"  download failed: {type(exc).__name__}: {exc}")
-            manual.append("ffmpeg / ffprobe not found and the automatic download failed.\n"
-                          f"  Manual: get a Windows build from {FFMPEG_MANUAL_URL}\n"
-                          f"  and copy ffmpeg.exe and ffprobe.exe into {FFMPEG_BIN_DIR}")
+            manual.append("ffmpeg / ffprobe not found and the automatic download failed.\n  " + ffmpeg_manual_hint())
     else:
-        print("  not found (run without --no-download to fetch it)")
-        manual.append(f"ffmpeg / ffprobe not found. Manual: copy them into {FFMPEG_BIN_DIR}")
+        print("  not found (run without --no-download to fetch it)" if FFMPEG_ARCHIVE_URL else "  not found")
+        manual.append("ffmpeg / ffprobe not found.\n  " + ffmpeg_manual_hint())
 
     # Optional: a failure here only prints a warning, it does not fail the run.
     print("== Triton (optional, Windows only; used by xformers when xformers is enabled)")
@@ -172,9 +210,9 @@ def main() -> int:
             if gated:
                 lines.append("  This repo is gated: open the page, accept the license, create a")
                 lines.append("  read token at https://huggingface.co/settings/tokens, set HF_TOKEN to it,")
-                lines.append("  then run the .bat again.")
+                lines.append("  then run the launcher again.")
             else:
-                lines.append("  Fix: check the network or proxy, then run the .bat again.")
+                lines.append("  Fix: check the network or proxy, then run the launcher again.")
             manual.append("\n".join(lines))
 
     if manual:

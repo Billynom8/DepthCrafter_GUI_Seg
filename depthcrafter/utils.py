@@ -7,7 +7,14 @@ import mediapy
 import numpy as np
 import PIL.Image
 import torch
-from decord import VideoReader, cpu
+try:
+    from decord import VideoReader, cpu
+except ImportError:
+    # decord has no wheel for Apple Silicon or aarch64 Linux; use the ffmpeg-backed reader instead
+    from depthcrafter.ffmpeg_video_reader import FFmpegVideoReader as VideoReader
+
+    def cpu(index: int = 0):  # decord's context argument is not needed by the ffmpeg reader
+        return index
 
 logger = logging.getLogger(__name__)
 

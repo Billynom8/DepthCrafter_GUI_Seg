@@ -143,7 +143,7 @@ def read_video_frames(
         Tuple of (frames, fps, orig_h, orig_w, proc_h, proc_w, stream_info, ffprobe_raw)
     """
     import gc
-    from decord import VideoReader, cpu
+    from depthcrafter.utils import VideoReader, cpu  # decord, or the ffmpeg fallback where decord is unavailable
     
     _logger.debug(f"Reading video: {os.path.basename(video_path)}")
 

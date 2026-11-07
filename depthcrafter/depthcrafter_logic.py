@@ -12,6 +12,7 @@ _logger = logging.getLogger(__name__)
 
 from diffusers.training_utils import set_seed
 from depthcrafter.depth_crafter_ppl import DepthCrafterPipeline
+from depthcrafter.device_utils import cuda_empty_cache, pick_device, pick_dtype
 from depthcrafter.unet import DiffusersUNetSpatioTemporalConditionModelDepthCrafter
 
 # --- GUI Extension Imports ---
@@ -70,25 +71,34 @@ class DepthCrafterDemo:
         disable_xformers=False
     ):
         torch.backends.cudnn.benchmark = use_cudnn_benchmark
+        self.device = pick_device()
+        self.dtype = pick_dtype(self.device)
+        # fp16 weights are stored as a "fp16" variant; fp32 (CPU) loads the default files
+        variant = "fp16" if self.dtype == torch.float16 else None
+        _logger.info(f"Running on device '{self.device}' with dtype {self.dtype}.")
         try:
             unet = DiffusersUNetSpatioTemporalConditionModelDepthCrafter.from_pretrained(
                 unet_path,
                 low_cpu_mem_usage=True,
-                torch_dtype=torch.float16,
+                torch_dtype=self.dtype,
                 local_files_only=local_files_only
             )
             self.pipe = DepthCrafterPipeline.from_pretrained(
                 pre_train_path,
                 unet=unet,
-                torch_dtype=torch.float16,
-                variant="fp16",
+                torch_dtype=self.dtype,
+                variant=variant,
                 local_files_only=local_files_only
             )
             # for saving memory, we can offload the model to CPU, or even run the model sequentially to save more memory
             
             cpu_offload_lower = cpu_offload
 
-            if cpu_offload_lower == "sequential":
+            if self.device != "cuda":
+                # Accelerate offload hooks target CUDA. On MPS or CPU the whole pipeline stays on that device.
+                self.pipe.to(self.device)
+                _logger.info(f"CPU Offload '{cpu_offload}' ignored on {self.device}. Model loaded entirely on {self.device}.")
+            elif cpu_offload_lower == "sequential":
                 self.pipe.enable_sequential_cpu_offload()
                 _logger.info("CPU Offload set to 'sequential'.")
             elif cpu_offload_lower == "model":
@@ -103,7 +113,8 @@ class DepthCrafterDemo:
                 
             # Decide if xFormers should be enabled:
             # It's only enabled if the global flag is True AND the GUI flag (disable_xformers) is False.
-            should_enable_xformers = _ENABLE_XFORMERS_ATTENTION and not disable_xformers
+            # xFormers ships CUDA kernels only, so it is never enabled on MPS or CPU.
+            should_enable_xformers = _ENABLE_XFORMERS_ATTENTION and not disable_xformers and self.device == "cuda"
             
             if should_enable_xformers:
                 try:
@@ -742,5 +753,5 @@ class DepthCrafterDemo:
             intermediate_visual_format_to_save=intermediate_visual_fmt_for_infer,
             save_final_output_json_config_passed_in=save_final_json_for_this_job_config
         )
-        gc.collect(); torch.cuda.empty_cache()
+        gc.collect(); cuda_empty_cache()
         return save_path, job_metadata_dict

@@ -11,6 +11,8 @@ from diffusers.pipelines.stable_video_diffusion.pipeline_stable_video_diffusion 
 from diffusers.utils import logging
 from diffusers.utils.torch_utils import randn_tensor
 
+from depthcrafter.device_utils import cuda_empty_cache, cuda_synchronize, make_timing_event
+
 logger = logging.get_logger(__name__)
 
 
@@ -177,10 +179,10 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
         video = video * 2.0 - 1.0  # [0,1] -> [-1,1], in [t, c, h, w]
 
         if track_time:
-            start_event = torch.cuda.Event(enable_timing=True)
-            encode_event = torch.cuda.Event(enable_timing=True)
-            denoise_event = torch.cuda.Event(enable_timing=True)
-            decode_event = torch.cuda.Event(enable_timing=True)
+            start_event = make_timing_event()
+            encode_event = make_timing_event()
+            denoise_event = make_timing_event()
+            decode_event = make_timing_event()
             start_event.record()
 
         video_embeddings = self.encode_video(
@@ -188,7 +190,7 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
         ).unsqueeze(
             0
         )  # [1, t, 1024]
-        torch.cuda.empty_cache()
+        cuda_empty_cache()
         # 4. Encode input image using VAE
         noise = randn_tensor(
             video.shape, generator=generator, device=device, dtype=video.dtype
@@ -211,11 +213,11 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
 
         if track_time:
             encode_event.record()
-            torch.cuda.synchronize()
+            cuda_synchronize()
             elapsed_time_ms = start_event.elapsed_time(encode_event)
             print(f"Elapsed time for encoding video: {elapsed_time_ms} ms")
 
-        torch.cuda.empty_cache()
+        cuda_empty_cache()
 
         # cast back to fp16 if needed
         if needs_upcasting:
@@ -262,7 +264,7 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
         else:
             weights = None
 
-        torch.cuda.empty_cache()
+        cuda_empty_cache()
 
         # inference strategy for long videos
         # two main strategies: 1. noise init from previous frame, 2. segments stitching
@@ -360,7 +362,7 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
 
         if track_time:
             denoise_event.record()
-            torch.cuda.synchronize()
+            cuda_synchronize()
             elapsed_time_ms = encode_event.elapsed_time(denoise_event)
             print(f"Elapsed time for denoising video: {elapsed_time_ms} ms")
 
@@ -372,7 +374,7 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
 
             if track_time:
                 decode_event.record()
-                torch.cuda.synchronize()
+                cuda_synchronize()
                 elapsed_time_ms = denoise_event.elapsed_time(decode_event)
                 print(f"Elapsed time for decoding video: {elapsed_time_ms} ms")
 

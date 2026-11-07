@@ -6,7 +6,6 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "accelerate>=1.12.0",
-    "decord>=0.6.0",
     "diffusers>=0.35.2",
     "fire>=0.7.1",
     "gradio>=6.0.1",
@@ -18,8 +17,9 @@ dependencies = [
     "torchaudio==2.9.1",
     "torchvision==0.24.1",
     "transformers>=4.57.3",
-    "xformers==0.0.33.post2",
-    "decord==0.6.0",
+    # xformers and decord only ship wheels for Linux x86_64, Windows and (decord) macOS x86_64.
+    "xformers==0.0.33.post2; (sys_platform == 'linux' and platform_machine == 'x86_64') or sys_platform == 'win32'",
+    "decord==0.6.0; (sys_platform == 'linux' and platform_machine == 'x86_64') or sys_platform == 'win32' or (sys_platform == 'darwin' and platform_machine == 'x86_64')",
     "OpenEXR==3.2.4",
     "imageio==2.37.0",
     "Imath==0.0.2",
@@ -32,11 +32,12 @@ name = "pytorch"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
+# The CUDA 12.8 index has no macOS wheels, so macOS installs torch from PyPI.
 [tool.uv.sources]
-torch = { index = "pytorch" }
-torchvision = { index = "pytorch" }
-torchaudio = { index = "pytorch" }
-xformers = { index = "pytorch" }
+torch = [{ index = "pytorch", marker = "sys_platform != 'darwin'" }]
+torchvision = [{ index = "pytorch", marker = "sys_platform != 'darwin'" }]
+torchaudio = [{ index = "pytorch", marker = "sys_platform != 'darwin'" }]
+xformers = [{ index = "pytorch", marker = "sys_platform != 'darwin'" }]
 
 [tool.pytest.ini_options]
 pythonpath = "."

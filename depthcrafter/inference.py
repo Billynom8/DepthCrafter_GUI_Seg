@@ -8,6 +8,7 @@ import torch
 from diffusers.training_utils import set_seed
 
 from depthcrafter.depth_crafter_ppl import DepthCrafterPipeline
+from depthcrafter.device_utils import cuda_empty_cache, pick_device, pick_dtype
 from depthcrafter.unet import DiffusersUNetSpatioTemporalConditionModelDepthCrafter
 from depthcrafter.utils import read_video_frames, save_video, vis_sequence_depth
 
@@ -24,7 +25,7 @@ class DepthCrafterInference:
         unet_path: str,
         pre_train_path: str,
         cpu_offload: Optional[str] = "model",
-        device: str = "cuda",
+        device: Optional[str] = None,
     ):
         """
         Initialize the DepthCrafter inference pipeline.
@@ -32,25 +33,30 @@ class DepthCrafterInference:
         Args:
             unet_path (str): Path to the UNet model.
             pre_train_path (str): Path to the pre-trained model.
-            cpu_offload (Optional[str]): CPU offload strategy ("model", "sequential", or None).
-            device (str): Device to run the model on ("cuda" or "cpu").
+            cpu_offload (Optional[str]): CPU offload strategy ("model", "sequential", or None). CUDA only.
+            device (Optional[str]): "cuda", "mps" or "cpu". Default: auto-detect.
         """
-        logger.info(f"Loading UNet from {unet_path}")
+        device = device or pick_device()
+        dtype = pick_dtype(device)
+        variant = "fp16" if dtype == torch.float16 else None
+        self.device = device
+
+        logger.info(f"Loading UNet from {unet_path} (device: {device}, dtype: {dtype})")
         unet = DiffusersUNetSpatioTemporalConditionModelDepthCrafter.from_pretrained(
             unet_path,
             low_cpu_mem_usage=True,
-            torch_dtype=torch.float16,
+            torch_dtype=dtype,
         )
 
         logger.info(f"Loading pipeline from {pre_train_path}")
         self.pipe = DepthCrafterPipeline.from_pretrained(
             pre_train_path,
             unet=unet,
-            torch_dtype=torch.float16,
-            variant="fp16",
+            torch_dtype=dtype,
+            variant=variant,
         )
 
-        if cpu_offload is not None:
+        if cpu_offload is not None and device == "cuda":
             if cpu_offload == "sequential":
                 self.pipe.enable_sequential_cpu_offload()
             elif cpu_offload == "model":
@@ -60,10 +66,11 @@ class DepthCrafterInference:
         else:
             self.pipe.to(device)
 
-        try:
-            self.pipe.enable_xformers_memory_efficient_attention()
-        except (ImportError, ModuleNotFoundError, AttributeError) as e:
-            logger.warning(f"Xformers is not enabled: {e}")
+        if device == "cuda":
+            try:
+                self.pipe.enable_xformers_memory_efficient_attention()
+            except (ImportError, ModuleNotFoundError, AttributeError) as e:
+                logger.warning(f"Xformers is not enabled: {e}")
 
         self.pipe.enable_attention_slicing()
 
@@ -181,4 +188,4 @@ class DepthCrafterInference:
     def clear_cache(self):
         """Clear CUDA cache."""
         gc.collect()
-        torch.cuda.empty_cache()
+        cuda_empty_cache()
