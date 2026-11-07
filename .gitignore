@@ -171,3 +171,10 @@ eval/
 benchmark/datasets
 !help_content.json
 config_depthcrafter.json
+# Portable project: machine-specific folders, never commit
+uv-cache/
+models_cache/
+output_depthmaps/
+tools/ffmpeg/
+MISSING_MANUAL.txt
+python-*-embed-*/
