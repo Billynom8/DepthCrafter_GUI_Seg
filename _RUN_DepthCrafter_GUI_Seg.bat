@@ -26,7 +26,8 @@ if errorlevel 1 (
 )
 
 :: 2. Python packages. uv skips anything already installed and reuses the cache.
-uv sync
+:: --inexact keeps packages installed outside pyproject.toml (such as triton-windows)
+uv sync --inexact
 if errorlevel 1 (
     echo [ERROR] uv sync failed. Run this file again: the download cache is reused.
     pause

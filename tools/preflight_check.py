@@ -14,6 +14,8 @@ import argparse
 import importlib.util
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import urllib.request
 import zipfile
@@ -24,6 +26,8 @@ MANUAL_FILE = PROJECT_DIR / "MISSING_MANUAL.txt"
 FFMPEG_BIN_DIR = PROJECT_DIR / "tools" / "ffmpeg" / "bin"
 FFMPEG_ZIP_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
 FFMPEG_MANUAL_URL = "https://www.gyan.dev/ffmpeg/builds/"
+# Triton 3.5.1 matches the Triton that PyTorch 2.9.x uses on Linux; a cp312 win_amd64 wheel exists on PyPI.
+TRITON_SPEC = "triton-windows==3.5.1.post24"
 
 # Python packages are installed by `uv sync`; here we only check they import.
 REQUIRED_MODULES = [
@@ -67,6 +71,27 @@ def download_ffmpeg(dest_bin: Path) -> None:
     for exe in ("ffmpeg.exe", "ffprobe.exe"):
         if not (dest_bin / exe).is_file():
             raise RuntimeError(f"{exe} not found in the downloaded archive")
+
+
+def ensure_triton() -> str:
+    """Install triton-windows into the project venv (Windows only). Returns a status message.
+
+    Triton is optional: xformers uses it for some of its kernels when xformers is enabled.
+    The install goes through uv because uv-created venvs have no pip.
+    """
+    if sys.platform != "win32":
+        return "skipped (Windows only)"
+    if have_module("triton"):
+        return "already present"
+    uv = shutil.which("uv")
+    if not uv:
+        return "not installed: uv was not found on PATH"
+    result = subprocess.run([uv, "pip", "install", "--python", sys.executable, TRITON_SPEC],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        lines = (result.stderr or result.stdout).strip().splitlines()
+        return "install failed: " + (lines[-1] if lines else "unknown error")
+    return f"installed {TRITON_SPEC}"
 
 
 def check_hf_model(repo: str, patterns, sentinels, download: bool):
@@ -132,6 +157,10 @@ def main() -> int:
     else:
         print("  not found (run without --no-download to fetch it)")
         manual.append(f"ffmpeg / ffprobe not found. Manual: copy them into {FFMPEG_BIN_DIR}")
+
+    # Optional: a failure here only prints a warning, it does not fail the run.
+    print("== Triton (optional, Windows only; used by xformers when xformers is enabled)")
+    print("  " + ensure_triton())
 
     print(f"== Hugging Face models (HF_HOME={os.environ.get('HF_HOME', 'default user cache')})")
     for repo, patterns, sentinels, description, gated in HF_MODELS:
