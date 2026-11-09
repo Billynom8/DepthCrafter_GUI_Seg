@@ -28,6 +28,39 @@ CVPR 2025， **Highlight**
 </div>
 
 
+## My Modification update
+
+<div align="center">
+  <img src="tools/my_modification_gui.png" alt="DepthCrafter GUI Seg with Shot Queue" width="900" />
+</div>
+
+*   `[26-11-09]`
+
+    *   **Progress bars:** the top bar shows the current shot: percent, elapsed time and ETA, drawn in the middle of the bar. The bottom bar shows the whole run counted in shots: total percent, the running shot and ETA.
+    *   **Running shot:** the running row in the Shot Queue is bold, italic and red.
+    *   **EXR segment output:** the merged EXR sequence goes to `<shot>_depth/` with frames `<shot>_depth.00000.exr`, a numbered pattern that Nuke reads directly. Frames left by an earlier run are removed first.
+    *   **Draft cleanup:** in a queue run, the draft `<shot>_seg` folder is deleted once its shot has merged, before the next shot starts. This applies even when Keep Intermediate NPZ is on.
+    *   **Session memory:** the shot queue (with each shot's status) and all settings are saved automatically about one second after each change. After a crash or power cut, the queue is restored on the next start, and a shot that was running goes back to pending, so Start resumes it.
+    *   **Safer saves:** settings and queue files are written to a temp file and then renamed, so an interrupted save keeps the previous file.
+
+*   `[26-11-07]`
+
+    *   **Shot Queue:** panel on the right. Drag EXR/PNG sequence folders or video files in, or use Add Files / Add Folder. Each shot shows its status, name and frame count. Remove and Clear Done manage the list. The queue is locked while a run is active.
+    *   **Stop After Shot:** finishes the current shot, then stops the queue before the next one.
+    *   **VRAM clear between shots:** the CUDA cache is emptied after each shot in the queue.
+    *   **Failed shots:** a shot that fails or cannot be read is shown in red, and Start retries it.
+    *   **Segment naming:** merged PNG frames are named after the source clip (`<source>_Z_<frame>`). EXR naming changed on `[26-11-09]`.
+    *   **Portable Windows folder:** the uv cache, Hugging Face models and ffmpeg live inside the project folder (`uv-cache/`, `models_cache/`, `tools/ffmpeg/`), and the `.bat` launcher uses them.
+    *   **Preflight check** (`tools/preflight_check.py`): checks the Python packages, downloads ffmpeg (Windows and Linux x86_64) and the Hugging Face models when they are missing, and installs triton-windows on Windows. Anything it cannot fetch is listed in `MISSING_MANUAL.txt`.
+    *   **Linux and macOS:** new `run.sh` launcher. The device is picked automatically (CUDA, Apple MPS or CPU; set `DEPTHCRAFTER_DEVICE` to force one). xFormers and the other CUDA-only calls run only on CUDA. decord is optional: without it, an ffmpeg-based reader is used. `pyproject.toml` uses platform markers.
+
+*   `[26-11-03]`
+
+    *   **EXR sequence input:** load EXR sequences with a Rec.709 (default) or ACES input transform.
+    *   **EXR output bit depth:** float32 or half.
+    *   **Full-video output format:** mp4, main10_mp4 (10-bit H.265), png_sequence or exr_sequence.
+    *   **Fix:** KeyError `processed_height` for image-sequence and single-image inputs.
+
 ## GUI Update
 
 *   `[26-02-06]` 

@@ -28,6 +28,7 @@ _logger = logging.getLogger(__name__)
 
 # Import the backend logic class
 from depthcrafter.depthcrafter_logic import DepthCrafterDemo
+from depthcrafter.progress import set_progress_listener
 
 # Import GUI-specific utilities from extension modules
 from depthcrafter.gui_video_utils import (
@@ -151,8 +152,89 @@ class Tooltip:
             self.tooltip_window.destroy()
         self.tooltip_window = None
         
+def _format_hms(seconds) -> str:
+    """Format seconds as HH:MM:SS, or --:--:-- when the value is unknown."""
+    if seconds is None:
+        return "--:--:--"
+    seconds = max(int(round(seconds)), 0)
+    hours, rest = divmod(seconds, 3600)
+    minutes, secs = divmod(rest, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def _write_json_atomic(path: str, data) -> None:
+    """Write JSON to a temp file, then rename it over the target.
+
+    A crash or power cut during the write leaves the previous file intact.
+    """
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(data, f, indent=4)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, path)
+
+
+class TextProgressBar(tk.Canvas):
+    """Determinate progress bar that draws its label in the middle of the bar.
+
+    Supports the item access the GUI already uses for ttk.Progressbar:
+    bar["value"] and bar["maximum"]. set_text(None) shows the percentage.
+    """
+
+    FILL_COLOR = "#2ecc71"
+    TROUGH_COLOR = "#d9d9d9"
+    TEXT_COLOR = "#111111"
+
+    def __init__(self, master, height=22):
+        super().__init__(master, height=height, highlightthickness=0, bd=0,
+                         background=self.TROUGH_COLOR)
+        self._bar_value = 0.0
+        self._bar_max = 1.0
+        self._bar_text = None
+        self._bar_font = tkfont.Font(root=self.winfo_toplevel(), font="TkDefaultFont")
+        self._bar_font.configure(weight="bold")
+        self.bind("<Configure>", lambda _event: self._redraw())
+
+    def __getitem__(self, key):
+        if key == "value":
+            return self._bar_value
+        if key == "maximum":
+            return self._bar_max
+        return super().__getitem__(key)
+
+    def __setitem__(self, key, value):
+        if key == "value":
+            self._bar_value = float(value)
+        elif key == "maximum":
+            self._bar_max = float(value) if float(value) > 0 else 1.0
+        else:
+            super().__setitem__(key, value)
+            return
+        self._redraw()
+
+    def set_text(self, text):
+        self._bar_text = text
+        self._redraw()
+
+    def _fraction(self) -> float:
+        return min(max(self._bar_value / self._bar_max, 0.0), 1.0)
+
+    def _redraw(self):
+        width = max(self.winfo_width(), 2)
+        height = max(self.winfo_height(), 2)
+        frac = self._fraction()
+        self.delete("all")
+        self.create_rectangle(0, 0, width, height, fill=self.TROUGH_COLOR, outline="")
+        if frac > 0:
+            self.create_rectangle(0, 0, int(width * frac), height, fill=self.FILL_COLOR, outline="")
+        label = self._bar_text if self._bar_text is not None else f"{frac * 100:.0f}%"
+        self.create_text(width // 2, height // 2, text=label, fill=self.TEXT_COLOR, font=self._bar_font)
+
+
 class DepthCrafterGUI:
     CONFIG_FILENAME = "config_depthcrafter.json"
+    QUEUE_STATE_FILENAME = "queue_state_depthcrafter.json"
     HELP_CONTENT_FILENAME = os.path.join("depthcrafter", "help_content.json")
     MOVE_ORIGINAL_TO_FINISHED_FOLDER_ON_COMPLETION = True
     SETTINGS_FILETYPES = [("JSON files", "*.json"), ("All files", "*.*")]
@@ -274,6 +356,17 @@ class DepthCrafterGUI:
         self.stop_after_shot_event = threading.Event()
         self.queue_items = []      # shot queue, in run order
         self.queue_by_iid = {}     # treeview iid -> queue item
+        # Progress state for the shot bar (top) and the run bar (bottom); updated in process_queue
+        self._run_active = False        # True while a run started from the GUI is in progress
+        self._run_from_queue = False    # True when the current run was started from the shot queue
+        self._queue_total = 0           # shots in the current run
+        self._queue_done = 0            # shots finished in the current run
+        self._queue_started_at = None   # time.monotonic() when the run started
+        self._shot_name = ""            # name of the shot being processed
+        self._shot_fraction = 0.0       # progress of the current shot, 0..1
+        self._shot_started_at = None    # time.monotonic() when the current shot started
+        self._shot_finished = False     # True once the current shot has been counted as done
+        self._autosave_job = None       # pending after() id for the debounced autosave
         self.processing_thread = None
         self.secondary_output_widgets_references = []
         self._load_help_content()
@@ -297,6 +390,9 @@ class DepthCrafterGUI:
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.toggle_merge_related_options_active_state()
         self.toggle_secondary_output_options_active_state()
+        # Restore the shot queue of the last session, then save every later change to disk
+        self._restore_queue_state()
+        self._install_autosave()
                 
         _logger.debug("DepthCrafter GUI initialized successfully.")
 
@@ -375,9 +471,12 @@ class DepthCrafterGUI:
            
         self.root.update_idletasks()
     
-    def _cleanup_segment_folder(self, segment_subfolder_path, original_basename, master_meta):
+    def _cleanup_segment_folder(self, segment_subfolder_path, original_basename, master_meta, force_delete=False):
         del_folder = False
-        if not self.keep_intermediate_npz_var.get():
+        if force_delete:
+            _logger.info(f"Deleting draft segment folder for {original_basename} (shot finished and merged).")
+            del_folder = True
+        elif not self.keep_intermediate_npz_var.get():
             _logger.debug(f"Deleting intermediate segment subfolder for {original_basename} (Keep NPZ unchecked)...")
             del_folder = True
         else:
@@ -654,7 +753,9 @@ class DepthCrafterGUI:
                 self._save_final_output_sidecar_json(original_basename, final_merged_path, master_meta_filepath, master_meta_for_this_vid, was_segments, merge_success)
             
             if was_segments and segment_subfolder_path:
-                self._cleanup_segment_folder(segment_subfolder_path, original_basename, master_meta_for_this_vid)
+                # In a queue run, a shot that merged successfully drops its draft folder before the next shot
+                queue_cleanup = self._run_from_queue and merge_success
+                self._cleanup_segment_folder(segment_subfolder_path, original_basename, master_meta_for_this_vid, force_delete=queue_cleanup)
         except Exception as e:
             _logger.exception(f"Error during finalization for {original_basename}: {e}")
             self.status_message_var.set(f"Finalization Error: {e.__class__.__name__} for {original_basename}")
@@ -1342,7 +1443,9 @@ class DepthCrafterGUI:
     def _start_processing_wrapper(self, source_specs_to_process, effective_seed_for_run):
         try: 
             self.start_processing(source_specs_to_process, effective_seed_for_run)
-        finally: 
+        finally:
+            set_progress_listener(None)
+            self.message_queue.put(("run_finished", None))
             self._set_ui_processing_state(False)
 
     def _toggle_debug_logging(self):
@@ -1510,9 +1613,9 @@ class DepthCrafterGUI:
         self.queue_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         q_vsb.pack(side=tk.RIGHT, fill=tk.Y)
         base_font = "TkDefaultFont"
-        self._font_working = tkfont.Font(root=self.root, font=base_font); self._font_working.configure(weight="bold")
+        self._font_working = tkfont.Font(root=self.root, font=base_font); self._font_working.configure(weight="bold", slant="italic")
         self._font_done = tkfont.Font(root=self.root, font=base_font); self._font_done.configure(overstrike=True)
-        self.queue_tree.tag_configure("working", font=self._font_working)
+        self.queue_tree.tag_configure("working", font=self._font_working, foreground="#d62728")
         self.queue_tree.tag_configure("done", font=self._font_done, foreground="gray")
         self.queue_tree.tag_configure("error", foreground="#c0392b")
         q_btns = ttk.Frame(queue_frame); q_btns.pack(fill=tk.X, padx=5, pady=4)
@@ -1881,8 +1984,12 @@ class DepthCrafterGUI:
         progress_bar_frame = ttk.Frame(self.root)
         progress_bar_frame.pack(pady=(10, 0), padx=10, fill="x", expand=False)
         
-        self.progress = ttk.Progressbar(progress_bar_frame, orient="horizontal", length=300, mode="determinate")
+        # Top bar: current shot (0..1). Bottom bar: whole run, counted in shots.
+        self.progress = TextProgressBar(progress_bar_frame)
         self.progress.pack(fill=tk.X, expand=True, padx=0, pady=0)
+        self.progress["maximum"] = 1.0
+        self.queue_progress = TextProgressBar(progress_bar_frame)
+        self.queue_progress.pack(fill=tk.X, expand=True, padx=0, pady=(4, 0))
 
         # Status Label (NEW)
         self.style.configure("Status.TLabel", anchor="center") 
@@ -2008,6 +2115,7 @@ class DepthCrafterGUI:
 
     def on_close(self):
         self.save_config()
+        self._save_queue_state()
         if self.processing_thread and self.processing_thread.is_alive():
             _logger.info("Stopping processing before exit...")
             self.stop_event.set()
@@ -2016,6 +2124,94 @@ class DepthCrafterGUI:
                 _logger.warning("Processing thread did not terminate gracefully. Forcing exit.")
         
         self.root.destroy()
+
+    def _refresh_progress_bars(self):
+        """Update both bars and their labels while a run is active (UI thread only)."""
+        now = time.monotonic()
+        # Shot bar: elapsed time, and a linear ETA from the fraction done so far
+        shot_frac = self._shot_fraction
+        shot_elapsed = (now - self._shot_started_at) if self._shot_started_at is not None else None
+        shot_eta = shot_elapsed * (1.0 - shot_frac) / shot_frac if (shot_elapsed is not None and shot_frac > 0.0) else None
+        self.progress["value"] = shot_frac
+        self.progress.set_text(f"{shot_frac * 100:.0f}%   |   elapsed {_format_hms(shot_elapsed)}   |   ETA {_format_hms(shot_eta)}")
+        # Run bar: whole shots finished, plus the fraction of the running shot until it is counted
+        total = max(self._queue_total, 1)
+        run_units = self._queue_done + (0.0 if self._shot_finished else shot_frac)
+        run_frac = min(run_units / total, 1.0)
+        run_elapsed = (now - self._queue_started_at) if self._queue_started_at is not None else None
+        run_eta = run_elapsed * (1.0 - run_frac) / run_frac if (run_elapsed is not None and run_frac > 0.0) else None
+        shot_no = min(self._queue_done + 1, self._queue_total)
+        self.queue_progress["maximum"] = total
+        self.queue_progress["value"] = run_units
+        self.queue_progress.set_text(f"Total {run_frac * 100:.1f}%   |   shot {shot_no}/{self._queue_total}: {self._shot_name}   |   ETA {_format_hms(run_eta)}")
+
+    def _schedule_autosave(self, *_trace_args):
+        """Save settings and the shot queue shortly after a change (debounced).
+
+        A crash or power cut then loses at most the last second of changes.
+        """
+        if self._autosave_job is not None:
+            try:
+                self.root.after_cancel(self._autosave_job)
+            except Exception:
+                pass
+        self._autosave_job = self.root.after(800, self._autosave_now)
+
+    def _autosave_now(self):
+        self._autosave_job = None
+        self.save_config()
+        self._save_queue_state()
+
+    def _install_autosave(self):
+        for tk_var in self.all_tk_vars.values():
+            tk_var.trace_add("write", self._schedule_autosave)
+
+    def _save_queue_state(self):
+        data = {"version": 1, "items": [
+            {"path": it["path"], "type": it["type"], "basename": it["basename"],
+             "name": it["name"], "frames": it["frames"], "status": it["status"]}
+            for it in self.queue_items]}
+        try:
+            _write_json_atomic(self.QUEUE_STATE_FILENAME, data)
+        except Exception as e:
+            _logger.warning(f"Could not save shot queue state: {e}")
+
+    def _restore_queue_state(self):
+        """Reload the shot queue saved by the last session.
+
+        A shot that was running when the app stopped goes back to pending, so Start resumes it.
+        """
+        if not os.path.exists(self.QUEUE_STATE_FILENAME):
+            return
+        try:
+            with open(self.QUEUE_STATE_FILENAME, "r") as f:
+                saved_items = json.load(f).get("items", [])
+        except Exception as e:
+            _logger.warning(f"Could not read shot queue state '{self.QUEUE_STATE_FILENAME}': {e}")
+            return
+        restored = 0
+        for saved in saved_items:
+            path = saved.get("path", "")
+            if not path or not os.path.exists(path):
+                _logger.info(f"Queue restore: '{path}' no longer exists, skipped.")
+                continue
+            status = saved.get("status", "pending")
+            if status not in ("pending", "working", "done", "error"):
+                status = "pending"
+            if status == "working":
+                status = "pending"  # interrupted by a crash or power cut
+            item = {"path": path, "type": saved.get("type", "image_sequence_folder"),
+                    "basename": saved.get("basename", os.path.basename(path)),
+                    "name": saved.get("name", os.path.basename(path)),
+                    "frames": saved.get("frames"), "status": status, "iid": None}
+            item["iid"] = self.queue_tree.insert("", tk.END, values=self._queue_row_values(item))
+            self.queue_items.append(item)
+            self.queue_by_iid[item["iid"]] = item
+            self._queue_refresh_row(item)
+            restored += 1
+        if restored:
+            _logger.info(f"Restored {restored} shot(s) from the last session.")
+            self.status_message_var.set(f"Restored {restored} shot(s) from the last session.")
 
     def process_queue(self):
         # The message queue is still used for progress bar updates
@@ -2030,11 +2226,29 @@ class DepthCrafterGUI:
                     self._set_ui_processing_state(content)
                 elif msg_type == "queue_status":
                     self._set_queue_row_status(*content)
+                elif msg_type == "shot_started":
+                    self._shot_name = content
+                    self._shot_fraction = 0.0
+                    self._shot_started_at = time.monotonic()
+                    self._shot_finished = False
+                elif msg_type == "shot_progress":
+                    self._shot_fraction = min(max(float(content), 0.0), 1.0)
+                elif msg_type == "queue_done":
+                    # The shot is now counted as a whole shot; its last fraction stays on the shot bar
+                    self._queue_done = int(content)
+                    self._shot_finished = True
+                elif msg_type == "run_finished":
+                    self._refresh_progress_bars()  # final values, including the last shot
+                    self._run_active = False
+                    self.progress.set_text(None)
+                    self.queue_progress.set_text(None)
             except queue.Empty:
                 break
             except Exception as e:
                 _logger.exception(f"Error processing GUI queue: {e}")
         
+        if self._run_active:
+            self._refresh_progress_bars()
         self.root.after(100, self.process_queue)
 
     def re_merge_from_gui(self):
@@ -2164,6 +2378,7 @@ class DepthCrafterGUI:
         self.queue_items.append(item)
         self.queue_by_iid[item["iid"]] = item
         self._queue_refresh_row(item)
+        self._schedule_autosave()
         return True
 
     def _count_sequence_frames(self, folder: str):
@@ -2217,6 +2432,7 @@ class DepthCrafterGUI:
         if item:
             item["status"] = status
             self._queue_refresh_row(item)
+            self._schedule_autosave()
 
     def _clear_vram_between_shots(self):
         gc.collect()
@@ -2256,6 +2472,7 @@ class DepthCrafterGUI:
                 self.queue_items.remove(item)
                 del self.queue_by_iid[iid]
             self.queue_tree.delete(iid)
+            self._schedule_autosave()
 
     def queue_clear_done(self):
         if self.processing_thread and self.processing_thread.is_alive(): return
@@ -2264,6 +2481,7 @@ class DepthCrafterGUI:
                 self.queue_items.remove(item)
                 del self.queue_by_iid[item["iid"]]
                 self.queue_tree.delete(item["iid"])
+                self._schedule_autosave()
 
     def request_stop_after_shot(self):
         if not (self.processing_thread and self.processing_thread.is_alive()):
@@ -2296,8 +2514,22 @@ class DepthCrafterGUI:
             set_exr_bit_depth(self.exr_bit_depth_var.get())
             set_full_output_format(self.full_output_format_var.get())
             self.status_message_var.set(f"Starting processing {len(final_jobs_to_process_sources)} files/sequences...")
-            self.progress["value"] = 0 # Initialize progress bar value
-            self.progress["maximum"] = len(final_jobs_to_process_sources) # Set progress bar max to total files/sources
+            # Top bar: current shot (0..1). Bottom bar: whole run, counted in shots.
+            self._run_active = True
+            self._queue_total = len(final_jobs_to_process_sources)
+            self._queue_done = 0
+            self._queue_started_at = time.monotonic()
+            self._shot_name = ""
+            self._shot_fraction = 0.0
+            self._shot_started_at = None
+            self._shot_finished = False
+            self.progress["maximum"] = 1.0
+            self.progress["value"] = 0
+            self.progress.set_text(None)
+            self.queue_progress["maximum"] = self._queue_total
+            self.queue_progress["value"] = 0
+            self.queue_progress.set_text(None)
+            self._schedule_autosave()
             self._set_ui_processing_state(True)
             
             # Pass the list of source specs. The ffprobe/segment definition will happen inside start_processing.
@@ -2316,6 +2548,7 @@ class DepthCrafterGUI:
 
         # Queue has pending shots: run the queue (input folder field is ignored)
         pending_queue_specs = self._queue_pending_specs()
+        self._run_from_queue = bool(pending_queue_specs)
         if pending_queue_specs:
             self.effective_move_original_on_completion = False  # never move shots that were dragged in
             _logger.info(f"Running shot queue: {len(pending_queue_specs)} shot(s).")
@@ -2460,6 +2693,7 @@ class DepthCrafterGUI:
                 self.status_message_var.set("Stopped after shot as requested.")
                 break
             self._queue_report(source_spec, "working")
+            self.message_queue.put(("shot_started", source_spec["basename"]))
             open_queue_spec = source_spec
             open_queue_result = "done"
 
@@ -2489,7 +2723,7 @@ class DepthCrafterGUI:
                 _logger.error(f"Lazy Job Definition: Unknown source_spec type '{current_gui_mode}' for basename '{original_basename}'. Skipping.")
                 open_queue_result = "error"
                 total_sources_processed += 1
-                self.message_queue.put(("progress", total_sources_processed))
+                self.message_queue.put(("queue_done", total_sources_processed))
                 continue
 
             # A. FFPROBE/METADATA EXTRACTION (Heavy lifting happens here - Phase 2 start)
@@ -2513,14 +2747,14 @@ class DepthCrafterGUI:
                 open_queue_result = "error"
                 
                 total_sources_processed += 1
-                self.message_queue.put(("progress", total_sources_processed))
+                self.message_queue.put(("queue_done", total_sources_processed))
                 continue 
 
             if not base_job_info_initial:
                 _logger.info(f"Skipping {original_basename}: Issues in metadata extraction/segment definition.")
                 open_queue_result = "error"
                 total_sources_processed += 1
-                self.message_queue.put(("progress", total_sources_processed))
+                self.message_queue.put(("queue_done", total_sources_processed))
                 continue
             
             # Store base info (includes raw frame count, fps, etc. gathered by define_video_segments)
@@ -2536,7 +2770,7 @@ class DepthCrafterGUI:
                     _logger.info(f"Skipping {original_basename}: No segments defined by settings (Reason: {reason_skip}).")
                     open_queue_result = "error"
                     total_sources_processed += 1
-                    self.message_queue.put(("progress", total_sources_processed))
+                    self.message_queue.put(("queue_done", total_sources_processed))
                     continue
                     
                 segment_subfolder_name = get_segment_output_folder_name(original_basename)
@@ -2554,7 +2788,7 @@ class DepthCrafterGUI:
                      _logger.info(f"Skipping {original_basename}: Job definition/resume resulted in no segments to process.")
                      open_queue_result = "error"
                      total_sources_processed += 1
-                     self.message_queue.put(("progress", total_sources_processed))
+                     self.message_queue.put(("queue_done", total_sources_processed))
                      continue
                      
             else: # Full video processing mode
@@ -2575,7 +2809,7 @@ class DepthCrafterGUI:
                     jobs_to_process_for_this_source.append(full_source_job)
                 else:
                     total_sources_processed += 1
-                    self.message_queue.put(("progress", total_sources_processed))
+                    self.message_queue.put(("queue_done", total_sources_processed))
                     continue # Skip to next source
             
             # C. Initialize Master Metadata for this video/sequence
@@ -2613,7 +2847,12 @@ class DepthCrafterGUI:
                 _logger.info(f"Processing {original_basename} - {log_msg_prefix}")
                 self.status_message_var.set(f"Processing {source_idx + 1} of {len(source_specs_to_process)} ({log_msg_prefix})")
 
+                # Denoising steps of this job feed the shot bar: (finished jobs + this job's fraction) / jobs
+                set_progress_listener(lambda done, total, _j=job_idx, _n=total_jobs_for_source: self.message_queue.put(
+                    ("shot_progress", (_j + done / max(total, 1)) / _n)))
                 job_successful, current_job_specific_metadata = self._process_single_job(demo, job_info_to_run, master_meta_for_this_vid)
+                set_progress_listener(None)
+                self.message_queue.put(("shot_progress", (job_idx + 1) / total_jobs_for_source))
                 
                 if current_job_specific_metadata is None:
                     _logger.error(f"Error: _process_single_job for {original_basename} returned None metadata. Initializing to empty dict.")
@@ -2649,7 +2888,7 @@ class DepthCrafterGUI:
 
             # F. Update Main Progress Bar (1 unit per source file/folder)
             total_sources_processed += 1
-            self.message_queue.put(("progress", total_sources_processed))
+            self.message_queue.put(("queue_done", total_sources_processed))
 
         if open_queue_spec is not None:
             self._queue_report(open_queue_spec, "pending" if self.stop_event.is_set() else open_queue_result)
@@ -2691,7 +2930,7 @@ class DepthCrafterGUI:
         config["single_file_mode_active"] = self.single_file_mode_active
         
         try:
-            with open(self.CONFIG_FILENAME, "w") as f: json.dump(config, f, indent=4)
+            _write_json_atomic(self.CONFIG_FILENAME, config)
         except Exception as e: 
             _logger.warning(f"Warning (GUI save_config): Could not save config: {e}")
 

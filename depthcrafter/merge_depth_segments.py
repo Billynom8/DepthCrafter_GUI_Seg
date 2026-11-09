@@ -425,17 +425,20 @@ def _determine_output_path(
 
 
     if out_format in ["png_sequence", "exr_sequence"]:
-        # For sequences, the output path is a new subfolder within target_output_dir
-        seq_type_suffix = "png_seq" if out_format == "png_sequence" else "exr_seq"
-        subfolder_name = f"{effective_base_filename}_{seq_type_suffix}"
-        
+        # For sequences, the output path is a new subfolder within target_output_dir.
+        # EXR sequences use the bare output name ("<shot>_depth/<shot>_depth.00000.exr");
+        # PNG sequences keep the "_png_seq" folder suffix.
+        if out_format == "exr_sequence":
+            subfolder_name = effective_base_filename
+        else:
+            subfolder_name = f"{effective_base_filename}_png_seq"
+
         # Auto-generate unique name if folder exists and final_filename_base_override was not explicitly set
         # This prevents overwriting previous auto-generated sequence folders unless explicitly named.
         constructed_seq_path = os.path.join(target_output_dir, subfolder_name)
         if not final_filename_base_override and os.path.exists(constructed_seq_path):
             ts = time.strftime("_%Y%m%d-%H%M%S")
-            subfolder_name = f"{effective_base_filename}_{seq_type_suffix}{ts}"
-            output_path_final = os.path.join(target_output_dir, subfolder_name)
+            output_path_final = os.path.join(target_output_dir, f"{subfolder_name}{ts}")
         else:
             output_path_final = constructed_seq_path
         
@@ -459,7 +462,7 @@ def _save_output_to_disk(video_data: np.ndarray, save_path: str, out_format: str
         _logger.critical("Video data for saving is empty.")
         raise ValueError("Video data for saving is empty.")
 
-    # Sequence frames are named "<source>_Z_<frame>" so they match the source clip;
+    # PNG frames are named "<source>_Z_<frame>" so they match the source clip;
     # without a source name they fall back to "frame_<frame>".
     frame_prefix = f"{file_stem}_Z" if file_stem else "frame"
     try:
@@ -472,10 +475,17 @@ def _save_output_to_disk(video_data: np.ndarray, save_path: str, out_format: str
             if not _HAS_OPENEXR:
                 _logger.warning("OpenEXR/Imath libraries not found. EXR sequence save skipped.")
                 raise ImportError("OpenEXR/Imath missing for EXR sequence.")
+            # Frames take the folder's name, e.g. "<shot>_depth/<shot>_depth.00000.exr",
+            # so the sequence reads as a numbered file pattern.
+            seq_name = os.path.basename(os.path.normpath(save_path))
+            # Remove frames left by an earlier run, so a shorter run leaves no stale tail.
+            for old_name in os.listdir(save_path):
+                if old_name.startswith(f"{seq_name}.") and old_name.endswith(".exr"):
+                    os.remove(os.path.join(save_path, old_name))
             saved_count, failed_count = 0,0
             for i, frame_f in enumerate(video_data):
                 try:
-                    save_single_frame_exr(frame_f.astype(np.float32), os.path.join(save_path, f"{frame_prefix}_{i:05d}.exr"))
+                    save_single_frame_exr(frame_f.astype(np.float32), os.path.join(save_path, f"{seq_name}.{i:05d}.exr"))
                     saved_count +=1
                 except Exception as e_exr_frame:
                     _logger.error(f"  ERROR saving EXR frame {i}: {e_exr_frame}. Skipping.")

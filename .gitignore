@@ -178,3 +178,7 @@ output_depthmaps/
 tools/ffmpeg/
 MISSING_MANUAL.txt
 python-*-embed-*/
+
+queue_state_depthcrafter.json
+queue_state_depthcrafter.json.tmp
+config_depthcrafter.json.tmp

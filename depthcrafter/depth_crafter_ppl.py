@@ -12,6 +12,7 @@ from diffusers.utils import logging
 from diffusers.utils.torch_utils import randn_tensor
 
 from depthcrafter.device_utils import cuda_empty_cache, cuda_synchronize, make_timing_event
+from depthcrafter.progress import report_denoise_step
 
 logger = logging.get_logger(__name__)
 
@@ -242,6 +243,13 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         self._num_timesteps = len(timesteps)
 
+        # Total denoising steps over all sliding windows, for the GUI progress bar.
+        # Same window positions as the while loop below.
+        window_stride = max(window_size - overlap, 1)
+        num_windows = len(range(0, max(num_frames - overlap, 0), window_stride))
+        total_denoise_steps = num_windows * len(timesteps)
+        denoise_steps_done = 0
+
         # 7. Prepare latent variables
         num_channels_latents = self.unet.config.in_channels
         latents_init = self.prepare_latents(
@@ -345,6 +353,9 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
                         and (i + 1) % self.scheduler.order == 0
                     ):
                         progress_bar.update()
+
+                    denoise_steps_done += 1
+                    report_denoise_step(denoise_steps_done, total_denoise_steps)
 
             if latents_all is None:
                 latents_all = latents.clone()
